@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api
-from sortinghat.command import Command
-from sortinghat.exceptions import NotFoundError
+from .. import api
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import NotFoundError
 
 
 class Move(Command):
@@ -33,6 +36,9 @@ class Move(Command):
     This command moves <from_id> identity into <to_uuid> unique identity.
     When <to_uuid> is the unique identity that is currently related to
     <from_id>, the command does not have any effect.
+    When <from_id> is equal to <to_uuid> and this unique identity does
+    not exist, a new unique identity will be created, detaching <from_id>
+    from its current unique identity and moving it to the new one.
     """
     def __init__(self, **kwargs):
         super(Move, self).__init__(**kwargs)
@@ -57,24 +63,26 @@ class Move(Command):
         return "%(prog)s mv <from_id> <to_uuid>"
 
     def run(self, *args):
-        """Move an identity into a unique identity.
+        """Move an identity into a unique identity."""
 
-        When <from_id> or <to_uuid> are empty the command does not have any
-        effect. The same happens when both <from_id> is currently related to
-        <to_uuid>.
-        """
         params = self.parser.parse_args(args)
 
         from_id = params.from_id
         to_uuid = params.to_uuid
 
-        self.move(from_id, to_uuid)
+        code = self.move(from_id, to_uuid)
+
+        return code
 
     def move(self, from_id, to_uuid):
         """Move an identity into a unique identity.
 
         The method moves the identity identified by <from_id> to
         the unique identity <to_uuid>.
+
+        In the case of<from_id> is equal to <to_uuid> and this unique identity
+        does not exist, a new unique identity will be created, detaching <from_id>
+        from its current unique identity and moving it to the new one.
 
         When <to_uuid> is the unique identity that is currently related to
         <from_id>, the action does not have any effect. The same occurs when
@@ -85,11 +93,14 @@ class Move(Command):
             will be moved
         """
         if not from_id or not to_uuid:
-            return
+            return CMD_SUCCESS
 
         try:
             api.move_identity(self.db, from_id, to_uuid)
             self.display('move.tmpl',
                          from_id=from_id, to_uuid=to_uuid)
-        except NotFoundError, e:
+        except NotFoundError as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return CMD_SUCCESS

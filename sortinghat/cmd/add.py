@@ -20,12 +20,16 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api
-from sortinghat.command import Command
-from sortinghat.exceptions import AlreadyExistsError, MatcherNotSupportedError, NotFoundError
-from sortinghat.matcher import create_identity_matcher
+from .. import api
+from ..command import Command, CMD_SUCCESS
+from ..exceptions import AlreadyExistsError, MatcherNotSupportedError, NotFoundError, WrappedValueError
+from ..matcher import create_identity_matcher
+from ..matching import SORTINGHAT_IDENTITIES_MATCHERS
 
 
 ADD_COMMAND_USAGE_MSG = \
@@ -75,6 +79,7 @@ class Add(Command):
         self.parser.add_argument('--uuid', dest='uuid', default=None,
                                  help="associates identity to this unique identity")
         self.parser.add_argument('-m', '--matching', dest='matching', default=None,
+                                 choices=SORTINGHAT_IDENTITIES_MATCHERS,
                                  help="match and merge using this type of matching")
         self.parser.add_argument('-i', '--interactive', action='store_true',
                                  help="run interactive mode while matching and merging")
@@ -92,8 +97,10 @@ class Add(Command):
 
         params = self.parser.parse_args(args)
 
-        self.add(params.source, params.email, params.name, params.username,
-                 params.uuid, params.matching, params.interactive)
+        code = self.add(params.source, params.email, params.name, params.username,
+                        params.uuid, params.matching, params.interactive)
+
+        return code
 
     def add(self, source, email=None, name=None, username=None, uuid=None,
             matching=None, interactive=False):
@@ -131,10 +138,11 @@ class Add(Command):
 
         if matching:
             try:
-                matcher = create_identity_matcher(matching)
-            except MatcherNotSupportedError, e:
+                blacklist = api.blacklist(self.db)
+                matcher = create_identity_matcher(matching, blacklist)
+            except MatcherNotSupportedError as e:
                 self.error(str(e))
-                return
+                return e.code
 
         try:
             new_uuid = api.add_identity(self.db, source, email, name, username, uuid)
@@ -143,8 +151,11 @@ class Add(Command):
 
             if matcher:
                 self.__merge_on_matching(uuid, matcher, interactive)
-        except (AlreadyExistsError, NotFoundError, ValueError), e:
+        except (AlreadyExistsError, NotFoundError, WrappedValueError) as e:
             self.error(str(e))
+            return e.code
+
+        return CMD_SUCCESS
 
     def __merge_on_matching(self, uuid, matcher, interactive):
         matches = api.match_identities(self.db, uuid, matcher)

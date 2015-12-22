@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api, utils
-from sortinghat.command import Command
-from sortinghat.exceptions import InvalidDateError, NotFoundError
+from .. import api, utils
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import InvalidDateError, NotFoundError
 
 
 class Log(Command):
@@ -79,9 +82,12 @@ class Log(Command):
             from_date = utils.str_to_datetime(params.from_date)
             to_date = utils.str_to_datetime(params.to_date)
 
-            self.log(uuid, organization, from_date, to_date)
-        except InvalidDateError, e:
+            code = self.log(uuid, organization, from_date, to_date)
+        except InvalidDateError as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return code
 
     def log(self, uuid=None, organization=None, from_date=None, to_date=None):
         """"List enrollment information available in the registry.
@@ -94,7 +100,7 @@ class Log(Command):
 
         Enrollments between a period can also be listed using <from_date> and
         <to_date> parameters. When these are set, the method will return
-        all those enrollments where Enrollment.init >= from_date AND
+        all those enrollments where Enrollment.start >= from_date AND
         Enrollment.end <= to_date. Defaults values for these dates are
         1900-01-01 and 2100-01-01.
 
@@ -108,5 +114,8 @@ class Log(Command):
             enrollments = api.enrollments(self.db, uuid, organization,
                                           from_date, to_date)
             self.display('log.tmpl', enrollments=enrollments)
-        except (NotFoundError, ValueError), e:
+        except (NotFoundError, ValueError) as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return CMD_SUCCESS

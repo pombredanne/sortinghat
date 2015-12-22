@@ -21,6 +21,9 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import datetime
 import sys
 import unittest
@@ -29,8 +32,10 @@ if not '..' in sys.path:
     sys.path.insert(0, '..')
 
 from sortinghat import api
+from sortinghat.command import CMD_SUCCESS, CMD_FAILURE
 from sortinghat.cmd.show import Show
 from sortinghat.db.database import Database
+from sortinghat.db.model import Country
 
 from tests.config import DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, DB_PORT
 
@@ -41,6 +46,8 @@ SHOW_EMPTY_OUTPUT = ""
 
 SHOW_OUTPUT = """unique identity 0000000000000000000000000000000000000000
 
+No profile
+
 No identities
 
 No enrollments
@@ -48,9 +55,15 @@ No enrollments
 
 unique identity 03e12d00e37fd45593c49a5a5a1652deca4cf302
 
+Profile:
+    * Name: -
+    * E-Mail: jsmith@example.com
+    * Bot: Yes
+    * Country: -
+
 Identities:
-  John Smith\tjsmith@example.com\tjsmith\tscm
-  John Smith\tjsmith@example.com\t-\tscm
+  03e12d00e37fd45593c49a5a5a1652deca4cf302\tJohn Smith\tjsmith@example.com\tjsmith\tscm
+  75d95d6c8492fd36d24a18bd45d62161e05fbc97\tJohn Smith\tjsmith@example.com\t-\tscm
 
 Enrollments:
   Example\t1900-01-01 00:00:00\t2100-01-01 00:00:00
@@ -58,10 +71,16 @@ Enrollments:
 
 unique identity 52e0aa0a14826627e633fd15332988686b730ab3
 
+Profile:
+    * Name: Jane Roe
+    * E-Mail: jroe@example.com
+    * Bot: No
+    * Country: US - United States of America
+
 Identities:
-  Jane Roe\tjroe@example.com\tjroe\tscm
-  -\tjroe@bitergia.com\t-\tunknown
-  -\tjroe@example.com\t-\tscm
+  52e0aa0a14826627e633fd15332988686b730ab3\tJane Roe\tjroe@example.com\tjroe\tscm
+  cbfb7bd31d556322c640f5bc7b31d58a12b15904\t-\tjroe@bitergia.com\t-\tunknown
+  fef873c50a48cfc057f7aa19f423f81889a8907f\t-\tjroe@example.com\t-\tscm
 
 Enrollments:
   Bitergia\t1999-01-01 00:00:00\t2000-01-01 00:00:00
@@ -70,10 +89,50 @@ Enrollments:
 
 SHOW_UUID_OUTPUT = """unique identity 52e0aa0a14826627e633fd15332988686b730ab3
 
+Profile:
+    * Name: Jane Roe
+    * E-Mail: jroe@example.com
+    * Bot: No
+    * Country: US - United States of America
+
 Identities:
-  Jane Roe\tjroe@example.com\tjroe\tscm
-  -\tjroe@bitergia.com\t-\tunknown
-  -\tjroe@example.com\t-\tscm
+  52e0aa0a14826627e633fd15332988686b730ab3\tJane Roe\tjroe@example.com\tjroe\tscm
+  cbfb7bd31d556322c640f5bc7b31d58a12b15904\t-\tjroe@bitergia.com\t-\tunknown
+  fef873c50a48cfc057f7aa19f423f81889a8907f\t-\tjroe@example.com\t-\tscm
+
+Enrollments:
+  Bitergia\t1999-01-01 00:00:00\t2000-01-01 00:00:00
+  Bitergia\t2006-01-01 00:00:00\t2008-01-01 00:00:00
+  Example\t1900-01-01 00:00:00\t2100-01-01 00:00:00"""
+
+SHOW_TERM_OUTPUT = """unique identity 03e12d00e37fd45593c49a5a5a1652deca4cf302
+
+Profile:
+    * Name: -
+    * E-Mail: jsmith@example.com
+    * Bot: Yes
+    * Country: -
+
+Identities:
+  03e12d00e37fd45593c49a5a5a1652deca4cf302\tJohn Smith\tjsmith@example.com\tjsmith\tscm
+  75d95d6c8492fd36d24a18bd45d62161e05fbc97\tJohn Smith\tjsmith@example.com\t-\tscm
+
+Enrollments:
+  Example\t1900-01-01 00:00:00\t2100-01-01 00:00:00
+
+
+unique identity 52e0aa0a14826627e633fd15332988686b730ab3
+
+Profile:
+    * Name: Jane Roe
+    * E-Mail: jroe@example.com
+    * Bot: No
+    * Country: US - United States of America
+
+Identities:
+  52e0aa0a14826627e633fd15332988686b730ab3\tJane Roe\tjroe@example.com\tjroe\tscm
+  cbfb7bd31d556322c640f5bc7b31d58a12b15904\t-\tjroe@bitergia.com\t-\tunknown
+  fef873c50a48cfc057f7aa19f423f81889a8907f\t-\tjroe@example.com\t-\tscm
 
 Enrollments:
   Bitergia\t1999-01-01 00:00:00\t2000-01-01 00:00:00
@@ -106,6 +165,12 @@ class TestBaseCase(unittest.TestCase):
         self.db.clear()
 
     def _load_test_dataset(self):
+        # Add country
+        with self.db.connect() as session:
+            # Add a country
+            us = Country(code='US', name='United States of America', alpha3='USA')
+            session.add(us)
+
         # Add organizations
         api.add_organization(self.db, 'Example')
         api.add_organization(self.db, 'Bitergia')
@@ -115,6 +180,7 @@ class TestBaseCase(unittest.TestCase):
                                        'John Smith', 'jsmith')
         api.add_identity(self.db, 'scm', 'jsmith@example.com', 'John Smith',
                          uuid=jsmith_uuid)
+        api.edit_profile(self.db, jsmith_uuid, email='jsmith@example.com', is_bot=True)
 
         # Add Joe Roe identity
         jroe_uuid = api.add_identity(self.db, 'scm', 'jroe@example.com',
@@ -123,9 +189,11 @@ class TestBaseCase(unittest.TestCase):
                          uuid=jroe_uuid)
         api.add_identity(self.db, 'unknown', 'jroe@bitergia.com',
                          uuid=jroe_uuid)
+        api.edit_profile(self.db, jroe_uuid, name='Jane Roe', email='jroe@example.com',
+                         is_bot=False, country_code='US')
 
         # Add unique identity, this one won't have neither identities
-        # nor enrollments 
+        # nor enrollments
         api.add_unique_identity(self.db,
                                 '0000000000000000000000000000000000000000')
 
@@ -140,20 +208,40 @@ class TestBaseCase(unittest.TestCase):
                            datetime.datetime(2006, 1, 1),
                            datetime.datetime(2008, 1, 1))
 
+
 class TestShowCommand(TestBaseCase):
     """Unit tests for show command"""
 
     def test_show(self):
         """Check show output"""
 
-        self.cmd.run()
+        code = self.cmd.run()
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, SHOW_OUTPUT)
 
-    def test_log_uuid(self):
-        """Check log using a uuid"""
+    def test_show_uuid(self):
+        """Check show using a uuid"""
 
-        self.cmd.run('52e0aa0a14826627e633fd15332988686b730ab3')
+        code = self.cmd.run('52e0aa0a14826627e633fd15332988686b730ab3')
+        self.assertEqual(code, CMD_SUCCESS)
+        output = sys.stdout.getvalue().strip()
+        self.assertEqual(output, SHOW_UUID_OUTPUT)
+
+    def test_show_term(self):
+        """Check show using a term"""
+
+        code = self.cmd.run('--term', 'example')
+        self.assertEqual(code, CMD_SUCCESS)
+        output = sys.stdout.getvalue().strip()
+        self.assertEqual(output, SHOW_TERM_OUTPUT)
+
+    def test_show_uuid_with_term(self):
+        """When the UUID is given, term parameter is ignored"""
+
+        code = self.cmd.run('--term', 'jsmith',
+                            '52e0aa0a14826627e633fd15332988686b730ab3')
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, SHOW_UUID_OUTPUT)
 
@@ -163,7 +251,8 @@ class TestShowCommand(TestBaseCase):
         # Delete the contents of the database
         self.db.clear()
 
-        self.cmd.run()
+        code = self.cmd.run()
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, SHOW_EMPTY_OUTPUT)
 
@@ -174,21 +263,49 @@ class TestShow(TestBaseCase):
     def test_show(self):
         "Check show"
 
-        self.cmd.show()
+        code = self.cmd.show()
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, SHOW_OUTPUT)
 
     def test_show_uuid(self):
-        """Check show using a uuid"""
+        """Check show using a UUID"""
 
-        self.cmd.show('52e0aa0a14826627e633fd15332988686b730ab3')
+        code = self.cmd.show(uuid='52e0aa0a14826627e633fd15332988686b730ab3')
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, SHOW_UUID_OUTPUT)
 
     def test_not_found_uuid(self):
-        """Check whether it raises an error when the uiid is not available"""
+        """Check whether it prints an error when the uiid is not available"""
 
-        self.cmd.show('FFFFFFFFFFFFFFF')
+        code = self.cmd.show(uuid='FFFFFFFFFFFFFFF')
+        self.assertEqual(code, CMD_FAILURE)
+        output = sys.stderr.getvalue().strip()
+        self.assertEqual(output, SHOW_UUID_NOT_FOUND_ERROR)
+
+    def test_show_term(self):
+        """Check show using a term"""
+
+        code = self.cmd.show(term='example')
+        self.assertEqual(code, CMD_SUCCESS)
+        output = sys.stdout.getvalue().strip()
+        self.assertEqual(output, SHOW_TERM_OUTPUT)
+
+    def test_show_uuid_with_term(self):
+        """When the UUID is given, term parameter is ignored"""
+
+        code = self.cmd.show(uuid='52e0aa0a14826627e633fd15332988686b730ab3',
+                             term='jsmith')
+        self.assertEqual(code, CMD_SUCCESS)
+        output = sys.stdout.getvalue().strip()
+        self.assertEqual(output, SHOW_UUID_OUTPUT)
+
+    def test_not_found_term(self):
+        """Check whether it prints an error when the term is not found"""
+
+        code = self.cmd.show(term='FFFFFFFFFFFFFFF')
+        self.assertEqual(code, CMD_FAILURE)
         output = sys.stderr.getvalue().strip()
         self.assertEqual(output, SHOW_UUID_NOT_FOUND_ERROR)
 
@@ -198,7 +315,8 @@ class TestShow(TestBaseCase):
         # Delete the contents of the database
         self.db.clear()
 
-        self.cmd.show()
+        code = self.cmd.show()
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, SHOW_EMPTY_OUTPUT)
 

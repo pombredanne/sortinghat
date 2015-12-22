@@ -21,6 +21,9 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import sys
 import unittest
 
@@ -28,6 +31,7 @@ if not '..' in sys.path:
     sys.path.insert(0, '..')
 
 from sortinghat import api
+from sortinghat.command import CMD_SUCCESS, CMD_FAILURE
 from sortinghat.cmd.move import Move
 from sortinghat.db.database import Database
 
@@ -38,6 +42,7 @@ MOVE_FROM_ID_NOT_FOUND_ERROR = "Error: FFFFFFFFFFF not found in the registry"
 MOVE_TO_UUID_NOT_FOUND_ERROR = "Error: Jane Rae not found in the registry"
 
 MOVE_OUTPUT = """Identity b4c250eaaf873a04093319f26ca13b02a9248251 moved to unique identity John Smith"""
+MOVE_NEW_UID_OUTPUT = """New unique identity b4c250eaaf873a04093319f26ca13b02a9248251 created. Identity moved"""
 MOVE_EMPTY_OUTPUT = ""
 
 
@@ -84,8 +89,9 @@ class TestMoveCommand(TestBaseCase):
     def test_move(self):
         """Check how it works when moving an identity"""
 
-        # Remove an identity
-        self.cmd.run('b4c250eaaf873a04093319f26ca13b02a9248251', 'John Smith')
+        # Move an identity
+        code = self.cmd.run('b4c250eaaf873a04093319f26ca13b02a9248251', 'John Smith')
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, MOVE_OUTPUT)
 
@@ -96,29 +102,43 @@ class TestMove(TestBaseCase):
     def test_move(self):
         """Check behaviour moving an identity"""
 
-        self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', 'John Smith')
+        code = self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', 'John Smith')
+        self.assertEqual(code, CMD_SUCCESS)
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, MOVE_OUTPUT)
 
     def test_not_found_from_id_identity(self):
         """Check if it fails moving an identity that does not exist"""
 
-        self.cmd.move('FFFFFFFFFFF', 'John Smith')
+        code = self.cmd.move('FFFFFFFFFFF', 'John Smith')
+        self.assertEqual(code, CMD_FAILURE)
         output = sys.stderr.getvalue().strip()
         self.assertEqual(output, MOVE_FROM_ID_NOT_FOUND_ERROR)
 
     def test_not_found_to_uuid_unique_identity(self):
         """Check if it fails moving an identity to a unique identity that does not exist"""
 
-        self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', 'Jane Rae')
+        code = self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', 'Jane Rae')
+        self.assertEqual(code, CMD_FAILURE)
         output = sys.stderr.getvalue().strip()
         self.assertEqual(output, MOVE_TO_UUID_NOT_FOUND_ERROR)
+
+    def test_create_new_unique_identity(self):
+        """Check if a new unique identity is created when both uuids are equal"""
+
+        code = self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', 'b4c250eaaf873a04093319f26ca13b02a9248251')
+        self.assertEqual(code, CMD_SUCCESS)
+        output = sys.stdout.getvalue().strip()
+        self.assertEqual(output, MOVE_NEW_UID_OUTPUT)
 
     def test_none_ids(self):
         """Check behavior moving None ids"""
 
-        self.cmd.move(None, 'John Smith')
-        self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', None)
+        code = self.cmd.move(None, 'John Smith')
+        self.assertEqual(code, CMD_SUCCESS)
+
+        code = self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', None)
+        self.assertEqual(code, CMD_SUCCESS)
 
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, MOVE_EMPTY_OUTPUT)
@@ -129,8 +149,11 @@ class TestMove(TestBaseCase):
     def test_empty_ids(self):
         """Check behavior moving empty ids"""
 
-        self.cmd.move('', 'John Smith')
-        self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', '')
+        code = self.cmd.move('', 'John Smith')
+        self.assertEqual(code, CMD_SUCCESS)
+
+        code = self.cmd.move('b4c250eaaf873a04093319f26ca13b02a9248251', '')
+        self.assertEqual(code, CMD_SUCCESS)
 
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, MOVE_EMPTY_OUTPUT)

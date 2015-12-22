@@ -20,11 +20,15 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat.command import Command
-from sortinghat.exceptions import DatabaseError
-from sortinghat.db.database import Database
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import DatabaseError, LoadError
+from ..db.database import Database
+from ..db.model import Country
 
 
 class Init(Command):
@@ -60,7 +64,9 @@ class Init(Command):
         """
         params = self.parser.parse_args(args)
 
-        self.initialize(params.name)
+        code = self.initialize(params.name)
+
+        return code
 
     def initialize(self, name):
         """Create an empty Sorting Hat registry.
@@ -71,12 +77,53 @@ class Init(Command):
 
         :param name: name of the database
         """
+        user = self._kwargs['user']
+        password = self._kwargs['password']
+        host = self._kwargs['host']
+        port = self._kwargs['port']
+
         try:
-            Database.create(self._kwargs['user'], self._kwargs['password'],
-                            name, self._kwargs['host'], self._kwargs['port'])
+            Database.create(user, password, name, host, port)
 
             # Try to access and create schema
-            Database(self._kwargs['user'], self._kwargs['password'],
-                     name, self._kwargs['host'], self._kwargs['port'])
-        except DatabaseError, e:
+            db = Database(user, password, name, host, port)
+
+            # Load countries list
+            self.__load_countries(db)
+        except DatabaseError as e:
             self.error(str(e))
+            return CMD_FAILURE
+        except LoadError as e:
+            Database.drop(user, password, name, host, port)
+            self.error(str(e))
+            return CMD_FAILURE
+
+        return CMD_SUCCESS
+
+    def __load_countries(self, db):
+        """Load the list of countries"""
+
+        try:
+            countries = self.__read_countries_file()
+        except IOError as e:
+            raise LoadError(str(e))
+
+        try:
+            with db.connect() as session:
+                for country in countries:
+                    session.add(country)
+        except Exception as e:
+            raise LoadError(str(e))
+
+    def __read_countries_file(self):
+        """Read countries from a CSV file"""
+        import csv
+        import pkg_resources
+
+        filename = pkg_resources.resource_filename('sortinghat', 'data/countries.csv')
+
+        with open(filename, 'r') as f:
+            reader = csv.DictReader(f, fieldnames=['name', 'code', 'alpha3'])
+            countries = [Country(**c) for c in reader]
+
+        return countries

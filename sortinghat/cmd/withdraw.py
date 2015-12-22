@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api, utils
-from sortinghat.command import Command
-from sortinghat.exceptions import InvalidDateError, NotFoundError
+from .. import api, utils
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import InvalidDateError, NotFoundError
 
 
 class Withdraw(Command):
@@ -81,9 +84,12 @@ class Withdraw(Command):
             from_date = utils.str_to_datetime(params.from_date)
             to_date = utils.str_to_datetime(params.to_date)
 
-            self.withdraw(uuid, organization, from_date, to_date)
-        except InvalidDateError, e:
+            code = self.withdraw(uuid, organization, from_date, to_date)
+        except InvalidDateError as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return code
 
     def withdraw(self, uuid, organization, from_date=None, to_date=None):
         """Withdraw a unique identity from an organization.
@@ -105,9 +111,12 @@ class Withdraw(Command):
         # Empty or None values for uuid and organizations are not allowed,
         # so do nothing
         if not uuid or not organization:
-            return
+            return CMD_SUCCESS
 
         try:
             api.delete_enrollment(self.db, uuid, organization, from_date, to_date)
-        except (NotFoundError, ValueError), e:
+        except (NotFoundError, ValueError) as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return CMD_SUCCESS

@@ -20,68 +20,72 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
-import json
 import sys
-import re
 
-import dateutil.parser
-
-from sortinghat import api
-from sortinghat.command import Command
-from sortinghat.db.model import MIN_PERIOD_DATE, MAX_PERIOD_DATE
-from sortinghat.exceptions import AlreadyExistsError, NotFoundError,\
-    BadFileFormatError, LoadError, MatcherNotSupportedError
-from sortinghat.matcher import create_identity_matcher
-
-
-# Regex for parsing domains input
-LINES_TO_IGNORE_REGEX = ur"^\s*(#.*)?\s*$"
-DOMAINS_LINE_REGEX = ur"^(?P<domain>\w\S+)[ \t]+(?P<organization>\w[^#\t\n\r\f\v]+)(([ \t]+#.+)?|\s*)$"
+from .. import api
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..db.model import MIN_PERIOD_DATE, MAX_PERIOD_DATE
+from ..exceptions import AlreadyExistsError, NotFoundError,\
+    InvalidFormatError, LoadError, MatcherNotSupportedError
+from ..matcher import create_identity_matcher
+from ..matching import SORTINGHAT_IDENTITIES_MATCHERS
+from ..parsing.sh import SortingHatParser
 
 
 class Load(Command):
     """Import data into the registry.
 
-    This command is able to import data about identities, organizationsa and
+    This command is able to import data about identities, organizations and
     domains. Data are read, by default, from the standard input. Files can also
     be used as data input giving the path to file as a positional argument.
 
-    Identities are added to the registry using the option '--identities' while
-    domains are added using the option '--domains'. Remember that a domain can
-    only be assigned to one company. If one of the given domains is already on
-    the registry, the new relationship will NOT be created unless --overwrite
-    option were set.
+    By default, identities and organizations are both loaded but two parameters
+    can be used to import some parts from the input. When '--identities' option
+    is set, only the data related to identities will be loaded. Identities
+    matching engine is set with '--matching' option. By default, no matching
+    engine is selected. The parameter '--match-new' can also be used to match
+    only those identities that are new on the registry.
 
-    Using the option '--source' will set on the registry where the information
-    to load comes from. This option only has effect when loading identities.
-    The default value for '--source' is 'unknown'.
+    Take into account that those organizations set on each identity enrollment
+    will be loaded despite '--identities' option were set.
+
+    In the same way, when '--orgs' option is set, the command will only import
+    the data from 'organizations' section. Remember that a domain can only be
+    assigned to one organization. If one of the given domains is already on the
+    registry, the new relationship will NOT be created unless --overwrite
+    option were set.
     """
     def __init__(self, **kwargs):
         super(Load, self).__init__(**kwargs)
 
         self._set_database(**kwargs)
+        self.new_uids = set()
 
         self.parser = argparse.ArgumentParser(description=self.description,
                                               usage=self.usage)
 
         # Actions
-        group = self.parser.add_mutually_exclusive_group()
+        group = self.parser.add_mutually_exclusive_group(required=False)
         group.add_argument('--identities', action='store_true',
                            help="import identities")
-        group.add_argument('--domains', action='store_true',
-                           help="import domains - organizations file")
+        group.add_argument('--orgs', action='store_true',
+                           help="import organizations")
 
         # General options
-        self.parser.add_argument('--source', dest='source', default='unknown',
-                                 help="name of the source where the information to load comes from")
         self.parser.add_argument('--overwrite', action='store_true',
                                  help="force to overwrite existing domain relationships")
 
         # Matching options
         group = self.parser.add_argument_group('matching options')
         group.add_argument('-m', '--matching', dest='matching', default=None,
+                           choices=SORTINGHAT_IDENTITIES_MATCHERS,
                            help="match and merge using this type of matching")
+        group.add_argument('-n', '--match-new', dest='match_new', action='store_true',
+                           help="match and merge only new unique identities")
         group.add_argument('-v', '--verbose', dest='verbose', action='store_true',
                            help="run verbose mode while matching and merging")
 
@@ -96,7 +100,20 @@ class Load(Command):
 
     @property
     def usage(self):
-        return "%(prog)s load --identities [-m matching] [-v] [file]\n   or: %(prog)s load --domains [--overwrite] [file]"
+        return "%(prog)s load [-v] [--identities | --orgs] [-m matching] [-n] [--overwrite] [file]"
+
+    def log(self, msg, debug=True):
+        if debug:
+            s = msg + '\n'
+
+            if sys.version_info[0] < 3: # Python 2.7
+                s = s.encode('UTF-8')
+
+            sys.stdout.write(s)
+
+    def warning(self, msg, debug=True):
+        if debug:
+            Command.warning(self, msg)
 
     def run(self, *args):
         """Import data on the registry.
@@ -106,171 +123,365 @@ class Load(Command):
         """
         params = self.parser.parse_args(args)
 
+        with params.infile as infile:
+            try:
+                stream = self.__read_file(infile)
+                parser = SortingHatParser(stream)
+            except InvalidFormatError as e:
+                self.error(str(e))
+                return CMD_FAILURE
+            except (IOError, TypeError, AttributeError) as e:
+                raise RuntimeError(str(e))
+
         if params.identities:
-            self.import_identities(params.infile, params.source,
-                                   params.matching, params.verbose)
-        elif params.domains:
-            self.import_domains(params.infile, params.overwrite)
+            self.import_blacklist(parser)
+            code = self.import_identities(parser, params.matching,
+                                          params.match_new, params.verbose)
+        elif params.orgs:
+            self.import_organizations(parser, params.overwrite)
+            code = CMD_SUCCESS
+        else:
+            self.import_organizations(parser, params.overwrite)
+            self.import_blacklist(parser)
+            code = self.import_identities(parser, params.matching,
+                                          params.match_new, params.verbose)
 
-    def import_identities(self, infile, source='unknown', matching=None,
+        return code
+
+    def import_blacklist(self, parser):
+        """Import blacklist.
+
+        New entries parsed by 'parser' will be added to the blacklist.
+
+        :param parser: sorting hat parser
+        """
+        blacklist = parser.blacklist
+
+        self.log("Loading blacklist...")
+        n = 0
+
+        for entry in blacklist:
+            try:
+                api.add_to_matching_blacklist(self.db, entry.excluded)
+                self.display('load_blacklist.tmpl', entry=entry.excluded)
+                n += 1
+            except ValueError as e:
+                raise RuntimeError(str(e))
+            except AlreadyExistsError as e:
+                msg = "%s. Not added." % str(e)
+                self.warning(msg)
+
+        self.log("%d/%d blacklist entries loaded" % (n, len(blacklist)))
+
+    def import_organizations(self, parser, overwrite=False):
+        """Import organizations.
+
+        New domains and organizations parsed by 'parser' will be added
+        to the registry. Remember that a domain can only be assigned to
+        one organization. If one of the given domains is already on the registry,
+        the new relationship will NOT be created unless 'overwrite' were set
+        to 'True'.
+
+        :param parser: sorting hat parser
+        :param overwrite: force to reassign domains
+        """
+        orgs = parser.organizations
+
+        for org in orgs:
+            try:
+                api.add_organization(self.db, org.name)
+            except ValueError as e:
+                raise RuntimeError(str(e))
+            except AlreadyExistsError as e:
+                pass
+
+            for dom in org.domains:
+                try:
+                    api.add_domain(self.db, org.name, dom.domain,
+                                   is_top_domain=dom.is_top_domain,
+                                   overwrite=overwrite)
+                    self.display('load_domains.tmpl', domain=dom.domain,
+                                 organization=org.name)
+                except (ValueError, NotFoundError) as e:
+                    raise RuntimeError(str(e))
+                except AlreadyExistsError as e:
+                    msg = "%s. Not updated." % str(e)
+                    self.warning(msg)
+
+    def import_identities(self, parser, matching=None, match_new=False,
                           verbose=False):
-        """Import identities information from a file on the registry.
+        """Import identities information on the registry.
 
-        New unique identities, organizations and enrollment data stored
-        on 'infile' will be added to the registry.
+        New unique identities, organizations and enrollment data parsed
+        by 'parser' will be added to the registry.
 
         Optionally, this method can look for possible identities that match with
         the new one to insert using 'matching' method. If a match is found,
         that means both identities are likely the same. Therefore, both identities
-        would be merged into one.
+        would be merged into one. The 'match_new' parameter can be set to match
+        and merge only new loaded identities.
 
-        :param infile: file to import
-        :param source: name of the source where the identities were extracted
+        :param parser: sorting hat parser
         :param matching: type of matching used to merge existing identities
+        :param match_new: match and merge only the new loaded identities
         :param verbose: run in verbose mode when matching is set
         """
         matcher = None
 
         if matching:
             try:
-                matcher = create_identity_matcher(matching)
-            except MatcherNotSupportedError, e:
+                blacklist = api.blacklist(self.db)
+                matcher = create_identity_matcher(matching, blacklist)
+            except MatcherNotSupportedError as e:
                 self.error(str(e))
-                return
+                return CMD_FAILURE
+
+        uidentities = parser.identities
 
         try:
-            identities = self.__parse_identities_file(infile)
-        except BadFileFormatError, e:
+            self.__load_unique_identities(uidentities, matcher, match_new,
+                                          verbose)
+        except LoadError as e:
             self.error(str(e))
-            return
-        except (IOError, TypeError, AttributeError), e:
-            raise RuntimeError(str(e))
+            return CMD_FAILURE
 
-        if 'committers' in identities:
-            loader = EclipseIdentitiesLoader(self.db)
-        elif 'identities' in identities:
-            loader = GrimoireIdentitiesLoader(self.db)
-        else:
-            self.error("format not supported")
-            return
+        return CMD_SUCCESS
 
-        try:
-            loader.display = self.display
-            loader.warning = self.warning
-            loader.load(identities, source, matcher, verbose)
-        except LoadError, e:
-            self.error(str(e))
+    def __load_unique_identities(self, uidentities, matcher, match_new,
+                                 verbose):
+        """Load unique identities"""
 
-    def import_domains(self, infile, overwrite=False):
-        """Import domains from a file on the registry.
+        self.new_uids.clear()
 
-        New domains and organizations stored on 'infile' will be added
-        to the registry. Remember that a domain can only be assigned to
-        one company. If one of the given domains is already on the registry,
-        the new relationship will NOT be created unless 'overwrite' were set
-        to 'True'.
+        n = 0
 
-        Each line of the file has to contain a domain and a company, separated
-        by white spaces or tabs. Comment lines start with the hash character (#)
-        For example:
+        self.log("Loading unique identities...")
 
-        # Domains from domains.txt
-        example.org        Example
-        example.com        Example
-        bitergia.com       Bitergia
-        libresoft.es       LibreSoft
-        example.org        LibreSoft
+        for uidentity in uidentities:
+            self.log("\n=====", verbose)
+            self.log("+ Processing %s" % uidentity.uuid, verbose)
 
-        :param infile: file to import
-        :param overwrite: force to reassign domains
-        """
-        try:
-            entries = self.__parse_domains_file(infile)
-        except BadFileFormatError, e:
-            self.error(str(e))
-            return
-        except (IOError, TypeError), e:
-            raise RuntimeError(str(e))
-
-        for domain, organization in entries:
-            # Add organization
             try:
-                api.add_organization(self.db, organization)
-            except ValueError, e:
-                raise RuntimeError(str(e))
-            except AlreadyExistsError, e:
-                pass
-
-            # Add domain
-            try:
-                api.add_domain(self.db, organization, domain,
-                               overwrite=overwrite)
-                self.display('load_domains.tmpl', domain=domain,
-                             organization=organization)
-            except (ValueError, NotFoundError), e:
-                raise RuntimeError(str(e))
-            except AlreadyExistsError, e:
-                msg = "%s. Not updated." % str(e)
-                self.warning(msg)
-
-    def __parse_identities_file(self, infile):
-        """Parse identities file object into a dict"""
-
-        content = infile.read().decode('UTF-8')
-
-        try:
-            data = json.loads(content)
-        except ValueError, e:
-            cause = "invalid json format. %s" % str(e)
-            raise BadFileFormatError(cause=cause)
-
-        return data
-
-    def __parse_domains_file(self, infile):
-        """Parse domains file object into a list of tuples"""
-
-        domains = []
-        nline = 0
-
-        for line in infile:
-            nline += 1
-
-            line = line.decode('UTF-8')
-
-            # Ignore blank lines and comments
-            m = re.match(LINES_TO_IGNORE_REGEX, line, re.UNICODE)
-            if m:
+                stored_uuid = self.__load_unique_identity(uidentity, verbose)
+            except LoadError as e:
+                self.error("%s Skipping." % str(e))
+                self.log("=====", verbose)
                 continue
 
-            m = re.match(DOMAINS_LINE_REGEX, line, re.UNICODE)
-            if not m:
-                cause = "invalid format on line %s" % str(nline)
-                raise BadFileFormatError(cause=cause)
+            stored_uuid = self.__load_identities(uidentity.identities, stored_uuid,
+                                                 verbose)
 
-            domain = m.group('domain').strip()
-            organization = m.group('organization').strip()
-            domains.append((domain, organization))
+            # The profile will be loaded when the stored unique identity
+            # does not have any one.
+            try:
+                self.__load_profile(uidentity.profile, stored_uuid, verbose)
+            except Exception as e:
+                self.error("%s. Loading %s profile. Skipping profile." % \
+                           (str(e), stored_uuid))
 
-        return domains
+            self.__load_enrollments(uidentity.enrollments, stored_uuid,
+                                    verbose)
 
+            if matcher and (not match_new or stored_uuid in self.new_uids):
+                stored_uuid = self._merge_on_matching(stored_uuid, matcher,
+                                                      verbose)
 
-class IdentitiesLoader(object):
-    """Abstract class for loading identities."""
+            self.log("+ %s (old %s) loaded" % (stored_uuid, uidentity.uuid))
+            self.log("=====", verbose)
+            n += 1
 
-    def __init__(self, db):
-        self.db = db
+        self.log("%d/%d unique identities loaded" % (n, len(uidentities)))
 
-    def load(self, identities, source, matcher=None, verbose=False):
-        raise NotImplementedError
+    def __load_unique_identity(self, uidentity, verbose):
+        """Seek or store unique identity"""
 
-    def display(self, msg):
-        raise NotImplementedError
+        uuid = uidentity.uuid
 
-    def warning(self, msg):
-        raise NotImplementedError
+        if uuid:
+            try:
+                api.unique_identities(self.db, uuid)
+                self.log("-- %s already exists." % uuid, verbose)
+                return uuid
+            except NotFoundError as e:
+                self.log("-- %s not found. Generating a new UUID." % uuid, verbose)
+
+        # We don't have a unique identity, so we have to create
+        # a new one.
+        if len(uidentity.identities) == 0:
+            msg = "not enough info to load %s unique identity." % uidentity.uuid
+            raise LoadError(cause=msg)
+
+        identity = uidentity.identities.pop(0)
+
+        try:
+            stored_uuid = api.add_identity(self.db, identity.source,
+                                           identity.email,
+                                           identity.name,
+                                           identity.username)
+            self.new_uids.add(stored_uuid)
+        except AlreadyExistsError as e:
+            stored_uuid = e.uuid
+            self.warning("-- " + str(e))
+        except ValueError as e:
+            raise LoadError(cause=str(e))
+
+        self.log("-- using %s for %s unique identity." % (stored_uuid, uuid), verbose)
+
+        return stored_uuid
+
+    def __load_identities(self, identities, uuid, verbose):
+        """Store identities"""
+
+        self.log("-- loading identities", verbose)
+
+        for identity in identities:
+            try:
+                api.add_identity(self.db, identity.source, identity.email,
+                                 identity.name, identity.username, uuid)
+                self.new_uids.add(uuid)
+            except AlreadyExistsError as e:
+                self.warning(str(e), verbose)
+
+                stored_uuid = e.uuid
+
+                if uuid != stored_uuid:
+                    msg = "%s is already assigned to %s. Merging." % (uuid, stored_uuid)
+                    self.warning(msg, verbose)
+
+                    api.merge_unique_identities(self.db, uuid, stored_uuid)
+
+                    if uuid in self.new_uids:
+                        self.new_uids.remove(uuid)
+
+                    self.new_uids.add(stored_uuid)
+                    uuid = stored_uuid
+
+        self.log("-- identities loaded", verbose)
+
+        return uuid
+
+    def __load_profile(self, profile, uuid, verbose):
+        """Create a new profile when the unique identity does not have any."""
+
+        uid = api.unique_identities(self.db, uuid)[0]
+
+        if uid.profile:
+            self.log("-- profile already available for %s. Not updated" % uuid, verbose)
+            return
+
+        if profile:
+            self.__create_profile(profile, uuid, verbose)
+        else:
+            self.__create_profile_from_identities(uid.identities, uuid, verbose)
+
+    def __create_profile(self, profile, uuid, verbose):
+        """Create profile information from a profile object"""
+
+        # Set parameters to edit
+        kw = profile.to_dict()
+        kw['country_code'] = profile.country_code
+
+        # Remove unused keywords
+        kw.pop('uuid')
+        kw.pop('country')
+
+        api.edit_profile(self.db, uuid, **kw)
+
+        self.log("-- profile %s updated" % uuid, verbose)
+
+    def __create_profile_from_identities(self, identities, uuid, verbose):
+        """Create a profile using the data from the identities"""
+
+        import re
+
+        EMAIL_ADDRESS_REGEX = r"^(?P<email>[^\s@]+@[^\s@.]+\.[^\s@]+)$"
+        NAME_REGEX = r"^\w+\s\w+"
+
+        name = None
+        email = None
+        username = None
+
+        for identity in identities:
+            if not name and identity.name:
+                m = re.match(NAME_REGEX, identity.name)
+
+                if m:
+                    name = identity.name
+
+            if not email and identity.email:
+                m = re.match(EMAIL_ADDRESS_REGEX, identity.email)
+
+                if m:
+                    email = identity.email
+
+            if not username:
+                if identity.username and identity.username != 'None':
+                    username = identity.username
+
+        # We need a name for each profile, so if no one was defined,
+        # use email or username to complete it.
+        if not name:
+            if email:
+                name = email.split('@')[0]
+            elif username:
+                # filter email addresses on username fields
+                name = username.split('@')[0]
+            else:
+                name = None
+
+        kw = {'name' : name,
+              'email' : email}
+
+        api.edit_profile(self.db, uuid, **kw)
+
+        self.log("-- profile %s updated" % uuid, verbose)
+
+    def __load_enrollments(self, enrollments, uuid, verbose):
+        """Store enrollments"""
+
+        self.log("-- loading enrollments", verbose)
+
+        organizations = []
+
+        for enrollment in enrollments:
+            organization = enrollment.organization.name
+
+            try:
+                api.add_organization(self.db, organization)
+            except AlreadyExistsError as e:
+                msg = "%s. Organization not updated." % str(e)
+                self.warning(msg, verbose)
+
+            if organization not in organizations:
+                organizations.append(organization)
+
+            from_date = max(MIN_PERIOD_DATE, enrollment.start)
+            to_date = min(MAX_PERIOD_DATE, enrollment.end)
+
+            if from_date != enrollment.start or to_date != enrollment.end:
+                msg = "Dates out of bound. Set to %s and %s." % (str(from_date), str(to_date))
+                self.warning(msg, verbose)
+
+            try:
+                api.add_enrollment(self.db, uuid, enrollment.organization.name,
+                                   from_date, to_date)
+            except AlreadyExistsError as e:
+                msg = "%s. Enrollment not updated." % str(e)
+                self.warning(msg, verbose)
+            except (ValueError, NotFoundError) as e:
+                raise LoadError(cause=str(e))
+
+        for organization in organizations:
+            api.merge_enrollments(self.db, uuid, organization)
+
+        self.log("-- enrollments loaded", verbose)
 
     def _merge_on_matching(self, uuid, matcher, verbose):
+        """Merge unique identity with uuid when a match is found"""
+
         matches = api.match_identities(self.db, uuid, matcher)
+
+        new_uuid = uuid
 
         u = api.unique_identities(self.db, uuid)[0]
 
@@ -280,177 +491,31 @@ class IdentitiesLoader(object):
 
             self._merge(u, m, verbose)
 
+            new_uuid = m.uuid
+
             # Swap uids to merge with those that could
             # remain on the list with updated info
             u = api.unique_identities(self.db, m.uuid)[0]
 
-    def _merge(self, uid, match, verbose):
+        return new_uuid
+
+    def _merge(self, from_uid, to_uid, verbose):
+        """Merge unique identity uid on match"""
+
         if verbose:
-            self.display('match.tmpl', uid=uid, match=match)
+            self.display('match.tmpl', uid=from_uid, match=to_uid)
 
-        api.merge_unique_identities(self.db, uid.uuid, match.uuid)
+        api.merge_unique_identities(self.db, from_uid.uuid, to_uid.uuid)
 
         if verbose:
-            self.display('merge.tmpl', from_uuid=uid.uuid, to_uuid=match.uuid)
+            self.display('merge.tmpl', from_uuid=from_uid.uuid, to_uuid=to_uid.uuid)
 
+    def __read_file(self, infile):
+        """Read a file into a str object"""
 
-class GrimoireIdentitiesLoader(IdentitiesLoader):
-    """Import identities using Metrics Grimoire identities format.
+        if sys.version_info[0] >= 3: # Python 3
+            content = infile.read()
+        else: # Python 2
+            content = infile.read().decode('UTF-8')
 
-    This class imports in the registry sets of identities defined
-    by the Metrics Grimoire JSON format. When a new instance is
-    created, do not forget to set warning method.
-
-    :param db: database manager
-    """
-    def __init__(self, db):
-        super(GrimoireIdentitiesLoader, self).__init__(db)
-
-    def load(self, identities, source, matcher=None, verbose=False):
-        """Load a set of identities.
-
-        Method to import identities into the registry. Identities schema must
-        follow Metrics Grimoire JSON format. This format includes 'source'
-        and 'time' properties that are ignored during loading process.
-
-        LoadError exception is raised when either the format is invalid
-        or an error occurs importing the data.
-
-        When 'matcher' parameter is given, this method will look for similar
-        identities among those on the registry. If a match is found, identities
-        will be merged. The matcher is an instance of IdentityMatcher class.
-
-        :param identities: identities stored in a JSON object
-        :param source: name of the source where the identities come from
-        :param matcher: matcher instance used to find similar identities
-        :param verbose: run in verbose mode when matcher is set
-        """
-        try:
-            for identity in identities['identities']:
-                uuid = self.__import_identity_json(identity, source)
-
-                if matcher:
-                    self._merge_on_matching(uuid, matcher, verbose)
-        except KeyError, e:
-            msg = "invalid json format. Attribute %s not found" % e.args
-            raise LoadError(cause=msg)
-
-    def __import_identity_json(self, identity, source):
-        """Import an identity from a json dict"""
-
-        encode = lambda s: s.encode('UTF-8') if s else None
-
-        name = encode(identity['name'])
-        email = encode(identity['email'])
-        username = encode(identity['username'])
-
-        try:
-            uuid = api.add_identity(self.db, source, email,
-                                    name, username)
-        except AlreadyExistsError, e:
-            uuid = e.uuid
-            msg = "%s. Unique identity not updated." % str(e)
-            self.warning(msg)
-
-        return uuid
-
-
-class EclipseIdentitiesLoader(IdentitiesLoader):
-    """Import identities using Eclipse identities format.
-
-    This class imports in the registry sets of identities defined
-    by the Eclipse identities JSON format. When a new instance is
-    created, do not forget to set warning method.
-
-    :param db: database manager
-    """
-    def __init__(self, db):
-        super(EclipseIdentitiesLoader, self).__init__(db)
-
-    def load(self, identities, source, matcher=None, verbose=False):
-        """Load a set of identities.
-
-        Method to import identities into the registry. Identities schema must
-        follow Eclipse JSON format. LoadError exception is raised when either
-        the format is invalid or an error occurs importing the data.
-
-        When 'matcher' parameter is given, this method will look for similar
-        identities among those on the registry. If a match is found, identities
-        will be merged. The matcher is an instance of IdentityMatcher class.
-
-        :param identities: identities stored in a JSON object
-        :param source: name of the source where the identities come from
-        :param matcher: matcher instance used to find similar identities
-        :param verbose: run in verbose mode when matcher is set
-        """
-        try:
-            for identity in identities['committers'].values():
-                uuid = self.__import_identity_json(identity, source)
-
-                if 'affiliations' in identity:
-                    self.__import_affiliations_json(uuid, identity['affiliations'])
-
-                if matcher:
-                    self._merge_on_matching(uuid, matcher, verbose)
-        except KeyError, e:
-            msg = "invalid json format. Attribute %s not found" % e.args
-            raise LoadError(cause=msg)
-
-    def __import_identity_json(self, identity, source):
-        """Import an identity from a json dict"""
-
-        name = (identity['first'] + ' ' + identity['last']).encode('UTF-8')
-        email = identity['primary'].encode('UTF-8')
-        username = identity['id'].encode('UTF-8')
-
-        try:
-            uuid = api.add_identity(self.db, source, email,
-                                    name, username)
-        except AlreadyExistsError, e:
-            uuid = e.uuid
-            msg = "%s. Unique identity not updated." % str(e)
-            self.warning(msg)
-
-        if not 'email' in identity:
-            return uuid
-
-        # Import alternative identities
-        for alt_email in identity['email']:
-            if alt_email == email:
-                continue
-            try:
-                api.add_identity(self.db, source,
-                                 alt_email, name, username, uuid)
-            except AlreadyExistsError, e:
-                msg = "%s. Identity not updated." % str(e)
-                self.warning(msg)
-            except (ValueError, NotFoundError), e:
-                raise LoadError(cause=str(e))
-
-        return uuid
-
-    def __import_affiliations_json(self, uuid, affiliations):
-        """Import identity's affiliations from a json dict"""
-
-        for affiliation in affiliations.values():
-            organization = affiliation['name'].encode('UTF-8')
-
-            try:
-                api.add_organization(self.db, organization)
-            except AlreadyExistsError, e:
-                msg = "%s. Organization not updated." % str(e)
-                self.warning(msg)
-
-            to_datetime = lambda x, d: dateutil.parser.parse(x) if x else d
-
-            from_date = to_datetime(affiliation['active'], MIN_PERIOD_DATE)
-            to_date = to_datetime(affiliation['inactive'], MAX_PERIOD_DATE)
-
-            try:
-                api.add_enrollment(self.db, uuid, organization,
-                                   from_date, to_date)
-            except AlreadyExistsError, e:
-                msg = "%s. Enrollment not updated." % str(e)
-                self.warning(msg)
-            except (ValueError, NotFoundError), e:
-                raise LoadError(cause=str(e))
+        return content

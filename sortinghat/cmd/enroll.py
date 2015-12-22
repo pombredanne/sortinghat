@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api, utils
-from sortinghat.command import Command
-from sortinghat.exceptions import AlreadyExistsError, InvalidDateError, NotFoundError
+from .. import api, utils
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import AlreadyExistsError, InvalidDateError, NotFoundError
 
 
 class Enroll(Command):
@@ -90,9 +93,12 @@ class Enroll(Command):
             to_date = utils.str_to_datetime(params.to_date)
             merge = params.merge
 
-            self.enroll(uuid, organization, from_date, to_date, merge)
-        except InvalidDateError, e:
+            code = self.enroll(uuid, organization, from_date, to_date, merge)
+        except InvalidDateError as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return code
 
     def enroll(self, uuid, organization, from_date=None, to_date=None, merge=False):
         """Enroll a unique identity in an organization.
@@ -117,22 +123,27 @@ class Enroll(Command):
         """
         # Empty or None values for uuid and organizations are not allowed
         if not uuid or not organization:
-            return
+            return CMD_SUCCESS
 
         try:
             api.add_enrollment(self.db, uuid, organization, from_date, to_date)
-        except (NotFoundError, ValueError), e:
+            code = CMD_SUCCESS
+        except (NotFoundError, ValueError) as e:
             self.error(str(e))
-        except AlreadyExistsError, e:
+            code = CMD_FAILURE
+        except AlreadyExistsError as e:
             if not merge:
                 self.error(str(e))
+                code = CMD_FAILURE
 
         if not merge:
-            return
+            return code
 
         try:
             api.merge_enrollments(self.db, uuid, organization)
-        except (NotFoundError, ValueError), e:
+        except (NotFoundError, ValueError) as e:
             # These exceptions were checked above. If any of these raises
             # is due to something really wrong has happened
             raise RuntimeError(str(e))
+
+        return CMD_SUCCESS

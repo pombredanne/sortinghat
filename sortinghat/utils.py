@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import dateutil.parser
 import hashlib
 
-from sortinghat.db.model import MIN_PERIOD_DATE, MAX_PERIOD_DATE
-from sortinghat.exceptions import InvalidDateError
+from .db.model import MIN_PERIOD_DATE, MAX_PERIOD_DATE
+from .exceptions import InvalidDateError
 
 
 def merge_date_ranges(dates):
@@ -61,9 +64,9 @@ def merge_date_ranges(dates):
 
     for st, en in sorted([sorted(t) for t in dates]):
         if st < MIN_PERIOD_DATE or st > MAX_PERIOD_DATE:
-            raise ValueError('start date %s is out of bounds' % str(st))
+            raise ValueError("start date %s is out of bounds" % str(st))
         if en < MIN_PERIOD_DATE or en > MAX_PERIOD_DATE:
-            raise ValueError('end date %s is out of bounds' % str(en))
+            raise ValueError("end date %s is out of bounds" % str(en))
 
         if st <= saved[1]:
             if saved[0] == MIN_PERIOD_DATE:
@@ -103,6 +106,21 @@ def str_to_datetime(ts):
         raise InvalidDateError(date=str(ts))
 
 
+def to_unicode(x):
+    import sys
+
+    if sys.version_info[0] >= 3: # Python 3
+        return str(x)
+    else: # Python 2
+        if type(x) is unicode:
+            return x
+
+        if x is None:
+            return unicode(x)
+
+        return unicode(x.decode('utf-8'))
+
+
 def uuid(source, email=None, name=None, username=None):
     """Get the UUID related to the identity data.
 
@@ -122,15 +140,16 @@ def uuid(source, email=None, name=None, username=None):
         parameters is None; parameters are empty.
     """
     if source is None:
-        raise ValueError('source cannot be None')
+        raise ValueError("source cannot be None")
     if source == '':
-        raise ValueError('source cannot be an empty string')
+        raise ValueError("source cannot be an empty string")
     if not (email or name or username):
-        raise ValueError('identity data cannot be None or empty')
+        raise ValueError("identity data cannot be None or empty")
 
-    s = ':'.join((source, str(email), str(name), str(username)))
+    s = ':'.join((to_unicode(source), to_unicode(email),
+                  to_unicode(name), to_unicode(username)))
 
-    sha1 = hashlib.sha1(s)
+    sha1 = hashlib.sha1(s.encode('UTF-8'))
     uuid = sha1.hexdigest()
 
     return uuid

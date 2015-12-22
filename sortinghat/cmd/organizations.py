@@ -20,15 +20,18 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api
-from sortinghat.command import Command
-from sortinghat.exceptions import AlreadyExistsError, NotFoundError
+from .. import api
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import AlreadyExistsError, NotFoundError
 
 
 ORGS_COMMAND_USAGE_MSG = \
-"""%(prog)s orgs -l [organization]
+"""%(prog)s orgs -l [term]
    or: %(prog)s orgs -a <organization> [domain] [--top-domain] [--overwrite]"
    or: %(prog)s orgs -d <organization> [domain]"""
 
@@ -37,8 +40,8 @@ class Organizations(Command):
     """List, add or delete organizations and domains from the registry.
 
     By default, this command lists the organizations and domains existing
-    in the registry. If <organization> is given, the method will list only
-    those domains related to it.
+    in the registry. If <term> is given, the method will list only
+    those organizations that match with that term.
 
     Organizations and domains can be added to the registry using '--add'
     option. This will add the given <organization> or <domain>, but not
@@ -116,11 +119,14 @@ class Organizations(Command):
 
 
         if params.add:
-            self.add(organization, domain, is_top_domain, overwrite)
+            code = self.add(organization, domain, is_top_domain, overwrite)
         elif params.delete:
-            self.delete(organization, domain)
+            code = self.delete(organization, domain)
         else:
-            self.registry(organization)
+            term = organization
+            code = self.registry(term)
+
+        return code
 
     def add(self, organization, domain=None, is_top_domain=False, overwrite=False):
         """Add organizations and domains to the registry.
@@ -149,27 +155,31 @@ class Organizations(Command):
         """
         # Empty or None values for organizations are not allowed
         if not organization:
-            return
+            return CMD_SUCCESS
 
         if not domain:
             try:
                 api.add_organization(self.db, organization)
-            except ValueError, e:
+            except ValueError as e:
                 # If the code reaches here, something really wrong has happened
                 # because organization cannot be None or empty
                 raise RuntimeError(str(e))
-            except AlreadyExistsError, e:
+            except AlreadyExistsError as e:
                 self.error(str(e))
+                return CMD_FAILURE
         else:
             try:
                 api.add_domain(self.db, organization, domain,
                                is_top_domain=is_top_domain,
                                overwrite=overwrite)
-            except ValueError, e:
+            except ValueError as e:
                 # Same as above, domains cannot be None or empty
                 raise RuntimeError(str(e))
-            except (AlreadyExistsError, NotFoundError), e:
+            except (AlreadyExistsError, NotFoundError) as e:
                 self.error(str(e))
+                return CMD_FAILURE
+
+        return CMD_SUCCESS
 
     def delete(self, organization, domain=None):
         """Remove organizations and domains from the registry.
@@ -186,30 +196,37 @@ class Organizations(Command):
         :param domain: domain to remove from the registry
         """
         if not organization:
-            return
+            return CMD_SUCCESS
 
         if not domain:
             try:
                 api.delete_organization(self.db, organization)
-            except NotFoundError, e:
+            except NotFoundError as e:
                 self.error(str(e))
+                return CMD_FAILURE
         else:
             try:
                 api.delete_domain(self.db, organization, domain)
-            except NotFoundError, e:
+            except NotFoundError as e:
                 self.error(str(e))
+                return CMD_FAILURE
 
-    def registry(self, organization=None):
+        return CMD_SUCCESS
+
+    def registry(self, term=None):
         """List organizations and domains.
 
-        When no organization is given, the method will list the organizations
-        existing in the registry. If 'organization' is set, the method will list
-        only those domains related with it.
+        When no term is given, the method will list the organizations
+        existing in the registry. If 'term' is set, the method will list
+        only those organizations and domains that match with that term.
 
-        :param organization: list the domains related to this organization
+        :param term: term to match
         """
         try:
-            orgs = api.registry(self.db, organization)
+            orgs = api.registry(self.db, term)
             self.display('organizations.tmpl', organizations=orgs)
-        except NotFoundError, e:
+        except NotFoundError as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return CMD_SUCCESS

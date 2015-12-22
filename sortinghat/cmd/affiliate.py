@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api
-from sortinghat.command import Command
-from sortinghat.exceptions import NotFoundError
+from .. import api
+from ..command import Command, CMD_SUCCESS
+from ..exceptions import NotFoundError
 
 
 class Affiliate(Command):
@@ -54,7 +57,9 @@ class Affiliate(Command):
 
         self.parser.parse_args(args)
 
-        self.affiliate()
+        code = self.affiliate()
+
+        return code
 
     def affiliate(self):
         """Affiliate unique identities.
@@ -66,8 +71,9 @@ class Affiliate(Command):
             uidentities = api.unique_identities(self.db)
 
             for uid in uidentities:
-                for identity in uid.identities:
+                uid.identities.sort(key=lambda x: x.id)
 
+                for identity in uid.identities:
                     # Only check email address to find new affiliations
                     if not identity.email:
                         continue
@@ -76,13 +82,15 @@ class Affiliate(Command):
 
                     try:
                         doms = api.domains(self.db, domain=domain, top=True)
-                    except NotFoundError, e:
+                    except NotFoundError as e:
                         continue
 
-                    if len(doms) != 1:
-                        msg = "multiple top domains for %s sub-domain. Please fix it before continue"
-                        msg = msg % domain
-                        raise RuntimeError(msg)
+                    if len(doms) > 1:
+                        doms.sort(key=lambda d: len(d.domain), reverse=True)
+
+                        msg = "multiple top domains for %s sub-domain. Domain %s selected."
+                        msg = msg % (domain, doms[0].domain)
+                        self.warning(msg)
 
                     organization = doms[0].organization.name
 
@@ -97,5 +105,7 @@ class Affiliate(Command):
 
                     self.display('affiliate.tmpl', id=uid.uuid,
                                  email=identity.email, organization=organization)
-        except (NotFoundError, ValueError), e:
+        except (NotFoundError, ValueError) as e:
             raise RuntimeError(str(e))
+
+        return CMD_SUCCESS

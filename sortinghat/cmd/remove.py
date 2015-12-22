@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api
-from sortinghat.command import Command
-from sortinghat.exceptions import NotFoundError
+from .. import api
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import NotFoundError
 
 
 class Remove(Command):
@@ -72,7 +75,9 @@ class Remove(Command):
         identifier = params.identifier
         identity = params.identity
 
-        self.remove(identifier, identity)
+        code = self.remove(identifier, identity)
+
+        return code
 
     def remove(self, uuid_or_id, identity=False):
         """Remove an identity from the registry.
@@ -88,7 +93,7 @@ class Remove(Command):
             not a unique identity.  By default it is set to False.
         """
         if not uuid_or_id:
-            return
+            return CMD_SUCCESS
 
         try:
             if not identity:
@@ -98,5 +103,8 @@ class Remove(Command):
 
             self.display('remove.tmpl',
                          uuid_or_id=uuid_or_id, identity=identity)
-        except NotFoundError, e:
+        except NotFoundError as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return CMD_SUCCESS

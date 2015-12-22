@@ -20,11 +20,18 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
-import ConfigParser
 import os.path
 
-from sortinghat.command import Command
+try:
+    import configparser
+except ImportError:
+    import ConfigParser as configparser
+
+from ..command import Command, CMD_SUCCESS
 
 
 class Config(Command):
@@ -85,11 +92,13 @@ class Config(Command):
         config_file = os.path.expanduser('~/.sortinghat')
 
         if params.action == 'get':
-            self.get(params.parameter, config_file)
+            code = self.get(params.parameter, config_file)
         elif params.action == 'set':
-            self.set(params.parameter, params.value, config_file)
+            code = self.set(params.parameter, params.value, config_file)
         else:
             raise RuntimeError("Not get or set action given")
+
+        return code
 
     def get(self, key, filepath):
         """Get configuration parameter.
@@ -112,14 +121,16 @@ class Config(Command):
 
         section, option = key.split('.')
 
-        config = ConfigParser.SafeConfigParser()
+        config = configparser.SafeConfigParser()
         config.read(filepath)
 
         try:
             option = config.get(section, option)
             self.display('config.tmpl', key=key, option=option)
-        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
+        except (configparser.NoSectionError, configparser.NoOptionError):
             pass
+
+        return CMD_SUCCESS
 
     def set(self, key, value, filepath):
         """Set configuration parameter.
@@ -138,7 +149,7 @@ class Config(Command):
         if not self.__check_config_key(key):
             raise RuntimeError("%s parameter does not exists or cannot be set" % key)
 
-        config = ConfigParser.SafeConfigParser()
+        config = configparser.SafeConfigParser()
 
         if os.path.isfile(filepath):
             config.read(filepath)
@@ -150,14 +161,16 @@ class Config(Command):
 
         try:
             config.set(section, option, value)
-        except TypeError, e:
+        except TypeError as e:
             raise RuntimeError(str(e))
 
         try:
-            with open(filepath, 'wb') as f:
+            with open(filepath, 'w') as f:
                 config.write(f)
-        except IOError, e:
+        except IOError as e:
             raise RuntimeError(str(e))
+
+        return CMD_SUCCESS
 
     def __check_config_key(self, key):
         """Check whether the key is valid.
@@ -177,4 +190,3 @@ class Config(Command):
 
         return section in Config.CONFIG_OPTIONS and\
             option in Config.CONFIG_OPTIONS[section]
-

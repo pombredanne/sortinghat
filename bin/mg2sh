@@ -21,27 +21,26 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import unicode_literals
+
 import argparse
 import sys
 
-from sqlalchemy import create_engine
-from sqlalchemy.engine.url import URL
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.schema import MetaData
-from sqlalchemy.orm import mapper, sessionmaker
-from sqlalchemy.pool import NullPool
+import sortinghat.db.database as db
 
+from sortinghat.db.model import MetricsGrimoireIdentity
 from sortinghat.exceptions import DatabaseError
+from sortinghat.utils import to_unicode
 
 
 MG2SH_USAGE_MSG = \
 """%(prog)s [--help] [-u <user>] [-p <password>]
-             [--host <host>] [--port <port>] [-d <name>]
-             [-o <output>]"""
+             [--host <host>] [--port <port>] -d <name>
+             -s <source> [-o <output>]"""
 
 MG2SH_DESC_MSG = \
 """Export identities information from Metrics Grimoire databases to
-sortinghat JSON format.
+Sorting Hat JSON format.
 
 General options:
   -h, --help            show this help message and exit
@@ -52,46 +51,11 @@ General options:
                         name of the Metrics Grimoire database
   --host HOST           name of the host where the database server is running
   --port PORT           port of the host where the database server is running
+  -s SOURCE, --source SOURCE
+                        name of the identities source
   -o FILE, --output FILE
                         output file
 """
-
-
-class MappedIdentity(object):
-    """Generic identity to map identities data from Metrics Grimoire databases"""
-
-    IDENTITIES_TABLES = ['people', 'users', 'irclog']
-
-    COLUMN_PREFIX = '_'
-
-    NAME_KEYS = ['_name']
-    EMAIL_KEYS = ['_email', '_email_address']
-    USERNAME_KEYS = ['_username', '_user_id', '_nick']
-
-    @property
-    def name(self):
-        return self.__map_to_attr(self.NAME_KEYS)
-
-    @property
-    def email(self):
-        return self.__map_to_attr(self.EMAIL_KEYS)
-
-    @property
-    def username(self):
-        return self.__map_to_attr(self.USERNAME_KEYS)
-
-    def to_dict(self):
-        return {'name' : self.name,
-                'email' : self.email,
-                'username' : self.username}
-
-    def __map_to_attr(self, m):
-        for k in m:
-            try:
-                return self.__getattribute__(k)
-            except:
-                pass
-        return None
 
 
 def main():
@@ -103,14 +67,15 @@ def main():
         identities = fetch_identities(args.user, args.password,
                                       args.database,
                                       args.host, args.port)
-    except DatabaseError, e:
+    except DatabaseError as e:
         raise RuntimeError(str(e))
 
-    json = to_json(identities, args.database)
+    json = to_json(identities, args.source)
 
     try:
         args.outfile.write(json)
-    except IOError, e:
+        args.outfile.write('\n')
+    except IOError as e:
         raise RuntimeError(str(e))
 
 
@@ -134,6 +99,8 @@ def parse_args():
                         help=argparse.SUPPRESS)
     parser.add_argument('--port', dest='port', default='3306',
                         help=argparse.SUPPRESS)
+    parser.add_argument('-s', '--source', dest='source', required=True,
+                        help=argparse.SUPPRESS)
     parser.add_argument('-o', '--outfile', nargs='?', type=argparse.FileType('w'),
                         default=sys.stdout,
                         help=argparse.SUPPRESS)
@@ -144,92 +111,58 @@ def parse_args():
 def fetch_identities(user, password, database, host, port):
     """Retrieve identities from a database"""
 
-    engine = create_database_engine(user, password, database,
-                                    host, port)
-    session = create_database_session(engine)
-    table = reflect_identities_table(engine)
+    engine = db.create_database_engine(user, password, database,
+                                       host, port)
+    session = db.create_database_session(engine)
+    table = db.reflect_table(engine, MetricsGrimoireIdentity)
 
-    query = session.query(MappedIdentity)
+    query = session.query(MetricsGrimoireIdentity)
 
-    # Specific case for IRC databases
-    if 'nick' in table.columns:
-        query = query.group_by(MappedIdentity._nick)
+    # Specific case for IRC or Wiki databases
+    if table.name == 'irclog' and 'nick' in table.columns:
+        query = query.filter(MetricsGrimoireIdentity._nick != None)
+        query = query.group_by(MetricsGrimoireIdentity._nick)
+    elif table.name == 'wiki_pages_revs' and 'user' in table.columns:
+        query = query.filter(MetricsGrimoireIdentity._user != None)
+        query = query.group_by(MetricsGrimoireIdentity._user)
 
     identities = query.all()
 
-    close_database_session(session)
+    db.close_database_session(session)
 
     return identities
 
 
 def to_json(identities, source):
-    """Convert identities to sortinghat JSON format"""
+    """Convert identities to Sorting Hat JSON format"""
 
     import datetime
     import json
 
-    ids = [identity.to_dict() for identity in identities]
+    uids = {}
+
+    for identity in identities:
+        uuid = to_unicode(identity.mg_id)
+
+        x = identity.to_dict()
+        x['id'] = uuid
+        x['uuid'] = uuid
+        x['source'] = source
+
+        uid = {'uuid' : uuid,
+               'profile' : None,
+               'enrollments' : [],
+               'identities' : [x]}
+
+        uids[uuid] = uid
 
     obj = {'time' : str(datetime.datetime.now()),
            'source' : source,
-           'identities' : ids}
+           'blacklist' : [],
+           'organizations' : {},
+           'uidentities' : uids}
 
-    return json.dumps(obj)
-
-
-def create_database_engine(user, password, database, host, port):
-    """Create a database engine"""
-
-    url = URL('mysql', user, password, host, port, database,
-              query={'charset' : 'utf8'})
-    return create_engine(url, poolclass=NullPool, echo=False)
-
-
-def create_database_session(engine):
-    """Connect to the database"""
-
-    try:
-        Session = sessionmaker(bind=engine)
-        return Session()
-    except OperationalError, e:
-        raise DatabaseError(error=e.orig[1], code=e.orig[0])
-
-
-def close_database_session(session):
-    """Close connection with the database"""
-
-    try:
-        session.close()
-    except OperationalError, e:
-        raise DatabaseError(error=e.orig[1], code=e.orig[0])
-
-
-def reflect_identities_table(engine):
-    """Inspect and reflect identity objects"""
-
-    try:
-        meta = MetaData()
-        meta.reflect(bind=engine)
-    except OperationalError, e:
-        raise DatabaseError(error=e.orig[1], code=e.orig[0])
-
-    # Try to reflect from any of the supported tables
-    table = None
-
-    for tb in MappedIdentity.IDENTITIES_TABLES:
-        if tb in meta.tables:
-            table = meta.tables[tb]
-            break
-
-    if table is None:
-        raise DatabaseError(error="Invalid schema. Identities table not found",
-                            code="-1")
-
-    # Map table schema into generic identity object
-    mapper(MappedIdentity, table,
-           column_prefix=MappedIdentity.COLUMN_PREFIX)
-
-    return table
+    return json.dumps(obj, indent=4, sort_keys=True)
 
 
 if __name__ == '__main__':
@@ -239,7 +172,7 @@ if __name__ == '__main__':
         s = "\n\nReceived Ctrl-C or other break signal. Exiting.\n"
         sys.stdout.write(s)
         sys.exit(0)
-    except RuntimeError, e:
+    except RuntimeError as e:
         s = "Error: %s\n" % str(e)
         sys.stderr.write(s)
         sys.exit(1)

@@ -20,13 +20,17 @@
 #         Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.engine.url import URL
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import mapper, sessionmaker
 from sqlalchemy.pool import NullPool
+from sqlalchemy.schema import MetaData
 
 from sortinghat.exceptions import DatabaseError
 from sortinghat.db.model import ModelBase
@@ -44,8 +48,8 @@ class Database(object):
 
         try:
             self.__create_schema(self._engine)
-        except OperationalError, e:
-            raise DatabaseError(error=e.orig[1], code=e.orig[0])
+        except OperationalError as e:
+            raise DatabaseError(error=e.orig.args[1], code=e.orig.args[0])
 
     @contextmanager
     def connect(self):
@@ -84,15 +88,75 @@ class Database(object):
     def execute(cls, engine, query):
         try:
             conn = engine.connect()
-            conn.execute(query);
-        except (OperationalError, ProgrammingError), e:
-            raise DatabaseError(error=e.orig[1], code=e.orig[0])
+            conn.execute(query)
+        except (OperationalError, ProgrammingError) as e:
+            raise DatabaseError(error=e.orig.args[1], code=e.orig.args[0])
 
     @classmethod
     def build_engine(cls, user, password, database, host='localhost', port='3306'):
-        url = URL('mysql', user, password, host, port, database,
-                  query={'charset' : 'utf8'})
-        return create_engine(url, poolclass=NullPool, echo=False)
+        return create_database_engine(user, password, database,
+                                      host, port)
 
     def __create_schema(self, engine):
         ModelBase.metadata.create_all(engine)
+
+
+def create_database_engine(user, password, database, host, port):
+    """Create a database engine"""
+
+    try:
+        import MySQLdb
+        driver = 'mysql+mysqldb'
+    except ImportError:
+        driver = 'mysql+pymysql'
+
+    url = URL(driver, user, password, host, port, database,
+              query={'charset' : 'utf8'})
+    return create_engine(url, poolclass=NullPool, echo=False)
+
+
+def create_database_session(engine):
+    """Connect to the database"""
+
+    try:
+        Session = sessionmaker(bind=engine)
+        return Session()
+    except OperationalError as e:
+        raise DatabaseError(error=e.orig.args[1], code=e.orig.args[0])
+
+
+def close_database_session(session):
+    """Close connection with the database"""
+
+    try:
+        session.close()
+    except OperationalError as e:
+        raise DatabaseError(error=e.orig.args[1], code=e.orig.args[0])
+
+
+def reflect_table(engine, klass):
+    """Inspect and reflect objects"""
+
+    try:
+        meta = MetaData()
+        meta.reflect(bind=engine)
+    except OperationalError as e:
+        raise DatabaseError(error=e.orig.args[1], code=e.orig.args[0])
+
+    # Try to reflect from any of the supported tables
+    table = None
+
+    for tb in klass.tables():
+        if tb in meta.tables:
+            table = meta.tables[tb]
+            break
+
+    if table is None:
+        raise DatabaseError(error="Invalid schema. Table not found",
+                            code="-1")
+
+    # Map table schema into klass
+    mapper(klass, table,
+           column_prefix=klass.column_prefix())
+
+    return table

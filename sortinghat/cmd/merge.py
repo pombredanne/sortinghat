@@ -20,11 +20,14 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import argparse
 
-from sortinghat import api
-from sortinghat.command import Command
-from sortinghat.exceptions import NotFoundError
+from .. import api
+from ..command import Command, CMD_SUCCESS, CMD_FAILURE
+from ..exceptions import NotFoundError
 
 
 class Merge(Command):
@@ -69,7 +72,9 @@ class Merge(Command):
         from_uuid = params.from_uuid
         to_uuid = params.to_uuid
 
-        self.merge(from_uuid, to_uuid)
+        code = self.merge(from_uuid, to_uuid)
+
+        return code
 
     def merge(self, from_uuid, to_uuid):
         """Merge one unique identity into another.
@@ -80,6 +85,10 @@ class Merge(Command):
         from the registry. Duplicated enrollments will be also removed from the
         registry.
 
+        Profile information will be updated with the values of <from_uuid> in the
+        case of <to_uuid> values were empty. If <from_uuid> was set as a bot,
+        <to_uuid> will be set too.
+
         When <from_uuid> and <to_uuid> are equal, None or empty, the action does
         not have any effect.
 
@@ -88,11 +97,14 @@ class Merge(Command):
             will be merged
         """
         if not from_uuid or not to_uuid:
-            return
+            return CMD_SUCCESS
 
         try:
             api.merge_unique_identities(self.db, from_uuid, to_uuid)
             self.display('merge.tmpl',
                          from_uuid=from_uuid, to_uuid=to_uuid)
-        except NotFoundError, e:
+        except NotFoundError as e:
             self.error(str(e))
+            return CMD_FAILURE
+
+        return CMD_SUCCESS

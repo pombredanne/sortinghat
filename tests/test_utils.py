@@ -21,6 +21,8 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import unicode_literals
+
 import datetime
 import sys
 import unittest
@@ -106,6 +108,14 @@ class TestMergeDateRanges(unittest.TestCase):
         ranges = [r for r in merge_date_ranges(dates)]
         self.assertEqual(len(ranges), 1)
         self.assertEqual(ranges[0], (datetime.datetime(2005, 1, 1), datetime.datetime(2100, 1, 1)))
+
+        # Case 9
+        dates = [(datetime.datetime(2000, 1, 1), datetime.datetime(2100, 1, 1)),
+                 (datetime.datetime(1900, 1, 1), datetime.datetime(2100, 1, 1))]
+
+        ranges = [r for r in merge_date_ranges(dates)]
+        self.assertEqual(len(ranges), 1)
+        self.assertEqual(ranges[0], (datetime.datetime(2000, 1, 1), datetime.datetime(2100, 1, 1)))
 
     def test_dates_out_of_bounds(self):
         """Check whether it raises an exception when dates are out of bounds"""
@@ -213,6 +223,12 @@ class TestUUID(unittest.TestCase):
 
         result = uuid('scm', email='', name='', username='jsmith')
         self.assertEqual(result, '6e7ce2426673f8a23a72a343b1382dda84c0078b')
+
+        result = uuid('scm', email='', name=u'John Ca\xf1as', username='jcanas')
+        self.assertEqual(result, 'ebc02af40a98d4ae76e61804cff6b383a1c7293e')
+
+        result = uuid('scm', email='', name="Max Müster", username='mmuester')
+        self.assertEqual(result, 'b16c494e93c791b4805ea0bdb4eca39ee033a759')
 
     def test_none_source(self):
         """Check whether uuid cannot be obtained giving a None source"""

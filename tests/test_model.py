@@ -21,6 +21,10 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
+import datetime
 import sys
 import unittest
 
@@ -32,8 +36,9 @@ from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import IntegrityError, OperationalError, StatementError
 from sqlalchemy.orm import sessionmaker
 
-from sortinghat.db.model import ModelBase, Organization, Domain,\
-    UniqueIdentity, Identity, Enrollment
+from sortinghat.db.model import ModelBase, Organization, Domain, Country,\
+    UniqueIdentity, Identity, Profile, Enrollment, MatchingBlacklist
+
 from tests.config import DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, DB_PORT
 
 
@@ -46,7 +51,13 @@ class MockDatabase(object):
 
     def __init__(self, user, password, database, host, port):
         # Create an engine
-        self.url = URL('mysql', user, password, host, port, database)
+        try:
+            import MySQLdb
+            driver = 'mysql+mysqldb'
+        except ImportError:
+            driver = 'mysql+pymysql'
+
+        self.url = URL(driver, user, password, host, port, database)
         self._engine = create_engine(self.url, echo=True)
         self._Session = sessionmaker(bind=self._engine)
 
@@ -95,11 +106,51 @@ class TestOrganization(TestCaseBase):
     def test_none_name_organizations(self):
         """Check whether organizations without name can be stored"""
 
-        with self.assertRaisesRegexp(OperationalError, NULL_CHECK_ERROR):
+        if sys.version_info[0] >= 3: # Python 3
+            expected = IntegrityError
+        else: # Python 2
+            expected = OperationalError
+
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
             org1 = Organization()
 
             self.session.add(org1)
             self.session.commit()
+
+    def test_to_dict(self):
+        """Test output of to_dict() method"""
+
+        org = Organization(name='Example')
+        self.session.add(org)
+
+        dom1 = Domain(domain='example.com',
+                      is_top_domain=True,
+                      organization=org)
+        dom2 = Domain(domain='us.example.net',
+                      is_top_domain=False,
+                      organization=org)
+        self.session.add(dom1)
+        self.session.add(dom2)
+        self.session.commit()
+
+        # Tests
+        d = org.to_dict()
+
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d['name'], 'Example')
+
+        doms = d['domains']
+        self.assertEqual(len(doms), 2)
+
+        d0 = doms[0]
+        self.assertEqual(d0['domain'], 'example.com')
+        self.assertEqual(d0['top_domain'], True)
+        self.assertEqual(d0['organization'], 'Example')
+
+        d1 = doms[1]
+        self.assertEqual(d1['domain'], 'us.example.net')
+        self.assertEqual(d1['top_domain'], False)
+        self.assertEqual(d1['organization'], 'Example')
 
 
 class TestDomain(TestCaseBase):
@@ -124,7 +175,12 @@ class TestDomain(TestCaseBase):
     def test_not_null_organizations(self):
         """Check whether every domain is assigned to an organization"""
 
-        with self.assertRaisesRegexp(OperationalError, NULL_CHECK_ERROR):
+        if sys.version_info[0] >= 3: # Python 3
+            expected = IntegrityError
+        else: # Python 2
+            expected = OperationalError
+
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
             dom1 = Domain(domain='example.com')
             self.session.add(dom1)
             self.session.commit()
@@ -132,7 +188,12 @@ class TestDomain(TestCaseBase):
     def test_none_name_domains(self):
         """Check whether domains without name can be stored"""
 
-        with self.assertRaisesRegexp(OperationalError, NULL_CHECK_ERROR):
+        if sys.version_info[0] >= 3: # Python 3
+            expected = IntegrityError
+        else: # Python 2
+            expected = OperationalError
+
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
             org1 = Organization(name='Example')
             self.session.add(org1)
 
@@ -155,6 +216,96 @@ class TestDomain(TestCaseBase):
             self.session.add(dom1)
             self.session.commit()
 
+    def test_to_dict(self):
+        """Test output of to_dict() method"""
+
+        org = Organization(name='Example')
+        self.session.add(org)
+
+        dom = Domain(domain='example.com',
+                     is_top_domain=True,
+                     organization=org)
+        self.session.add(dom)
+        self.session.commit()
+
+        # Tests
+        d = dom.to_dict()
+
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d['domain'], 'example.com')
+        self.assertEqual(d['top_domain'], True)
+        self.assertEqual(d['organization'], 'Example')
+
+
+class TestCountry(TestCaseBase):
+    """Unit tests for Country class"""
+
+    def test_unique_countries(self):
+        """Check whether countries are unique"""
+
+        with self.assertRaisesRegexp(IntegrityError, DUP_CHECK_ERROR):
+            c1 = Country(code='ES', name='Spain', alpha3='ESP')
+            self.session.add(c1)
+
+            c2 = Country(code='ES', name='España', alpha3='E')
+            self.session.add(c2)
+
+            self.session.commit()
+
+    def test_unique_alpha3(self):
+        """Check whether alpha3 codes are unique"""
+
+        with self.assertRaisesRegexp(IntegrityError, DUP_CHECK_ERROR):
+            c1 = Country(code='ES', name='Spain', alpha3='ESP')
+            self.session.add(c1)
+
+            c2 = Country(code='E', name='Spain', alpha3='ESP')
+            self.session.add(c2)
+
+            self.session.commit()
+
+    def test_none_name_country(self):
+        """Check whether countries without name can be stored"""
+
+        if sys.version_info[0] >= 3: # Python 3
+            expected = IntegrityError
+        else: # Python 2
+            expected = OperationalError
+
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
+            c = Country(code='ES', alpha3='ESP')
+            self.session.add(c)
+
+            self.session.commit()
+
+    def test_none_alpha3_country(self):
+        """Check whether countries without alpha3 code can be stored"""
+
+        if sys.version_info[0] >= 3: # Python 3
+            expected = IntegrityError
+        else: # Python 2
+            expected = OperationalError
+
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
+            c = Country(code='ES', name='Spain')
+            self.session.add(c)
+
+            self.session.commit()
+
+    def test_to_dict(self):
+        """Test output of to_dict() method"""
+
+        c = Country(code='ES', name='Spain', alpha3='ESP')
+        self.session.add(c)
+
+        # Tests
+        d = c.to_dict()
+
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d['code'], 'ES')
+        self.assertEqual(d['name'], 'Spain')
+        self.assertEqual(d['alpha3'], 'ESP')
+
 
 class TestUniqueIdentity(TestCaseBase):
     """Unit tests for UniqueIdentity class"""
@@ -170,6 +321,70 @@ class TestUniqueIdentity(TestCaseBase):
             self.session.add(uid2)
             self.session.commit()
 
+    def test_to_dict(self):
+        """Test output of to_dict() method"""
+
+        c = Country(code='US', name='United States of America', alpha3='USA')
+        self.session.add(c)
+
+        uid = UniqueIdentity(uuid='John Smith')
+        self.session.add(uid)
+
+        id1 = Identity(id='A', name='John Smith', email='jsmith@example.com',
+                       username='jsmith', source='scm', uuid='John Smith')
+        id2 = Identity(id='B', name=None, email='jsmith@example.net',
+                       username=None, source='scm', uuid='John Smith')
+
+        self.session.add(id1)
+        self.session.add(id2)
+        self.session.commit()
+
+        # Tests
+        d = uid.to_dict()
+
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d['uuid'], 'John Smith')
+
+        self.assertEqual(d['profile'], None)
+
+        identities = d['identities']
+        self.assertEqual(len(identities), 2)
+
+        d0 = d['identities'][0]
+        self.assertEqual(d0['id'], 'A')
+        self.assertEqual(d0['name'], 'John Smith')
+        self.assertEqual(d0['email'], 'jsmith@example.com')
+        self.assertEqual(d0['username'], 'jsmith')
+        self.assertEqual(d0['source'], 'scm')
+        self.assertEqual(d0['uuid'], 'John Smith')
+
+        d1 = d['identities'][1]
+        self.assertEqual(d1['id'], 'B')
+        self.assertEqual(d1['name'], None)
+        self.assertEqual(d1['email'], 'jsmith@example.net')
+        self.assertEqual(d1['username'], None)
+        self.assertEqual(d1['source'], 'scm')
+        self.assertEqual(d1['uuid'], 'John Smith')
+
+
+        prf = Profile(uuid='John Smith', name='Smith, J.',
+                      email='jsmith@example.com', is_bot=True,
+                      country_code='US')
+
+        # Add profile information
+        self.session.add(prf)
+        self.session.commit()
+
+        d = uid.to_dict()
+
+        dp = d['profile']
+        self.assertEqual(dp['uuid'], 'John Smith')
+        self.assertEqual(dp['name'], 'Smith, J.')
+        self.assertEqual(dp['email'], 'jsmith@example.com')
+        self.assertEqual(dp['is_bot'], True)
+        self.assertEqual(dp['country']['code'], 'US')
+        self.assertEqual(dp['country']['name'], 'United States of America')
+
 
 class TestIdentity(TestCaseBase):
     """Unit tests for Identity class"""
@@ -177,7 +392,12 @@ class TestIdentity(TestCaseBase):
     def test_not_null_source(self):
         """Check whether every identity has a source"""
 
-        with self.assertRaisesRegexp(OperationalError, NULL_CHECK_ERROR):
+        if sys.version_info[0] >= 3: # Python 3
+            expected = IntegrityError
+        else: # Python 2
+            expected = OperationalError
+
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
             id1 = Identity()
             self.session.add(id1)
             self.session.commit()
@@ -205,6 +425,94 @@ class TestIdentity(TestCaseBase):
 
         self.assertNotEqual(id1.id, id2.id)
 
+    def test_to_dict(self):
+        """Test output of to_dict() method"""
+
+        uid = UniqueIdentity(uuid='John Smith')
+        self.session.add(uid)
+
+        id1 = Identity(id='A', name='John Smith', email='jsmith@example.com',
+                       username='jsmith', source='scm', uuid='John Smith')
+
+        self.session.add(id1)
+        self.session.commit()
+
+        # Tests
+        d = id1.to_dict()
+
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d['id'], 'A')
+        self.assertEqual(d['name'], 'John Smith')
+        self.assertEqual(d['email'], 'jsmith@example.com')
+        self.assertEqual(d['username'], 'jsmith')
+        self.assertEqual(d['source'], 'scm')
+        self.assertEqual(d['uuid'], 'John Smith')
+
+
+class TestProfile(TestCaseBase):
+    """Unit tests for Profile class"""
+
+    def test_unique_profile(self):
+        """Check if there is only one profile for each unique identity"""
+
+        uid = UniqueIdentity(uuid='John Smith')
+        self.session.add(uid)
+
+        prf1 = Profile(uuid='John Smith', name='John Smith')
+        prf2 = Profile(uuid='John Smith', name='Smith, J.')
+
+        with self.assertRaisesRegexp(IntegrityError, DUP_CHECK_ERROR):
+            self.session.add(prf1)
+            self.session.add(prf2)
+            self.session.commit()
+
+    def test_is_bot_invalid_type(self):
+        """Check invalid values on is_bot bool column"""
+
+        with self.assertRaisesRegexp(StatementError, INVALID_DATATYPE_ERROR):
+            uid = UniqueIdentity(uuid='John Smith')
+            self.session.add(uid)
+
+            prf = Profile(uuid='John Smith', name='John Smith', is_bot='True')
+
+            self.session.add(prf)
+            self.session.commit()
+
+    def test_to_dict(self):
+        """Test output of to_dict() method"""
+
+        uid = UniqueIdentity(uuid='John Smith')
+        self.session.add(uid)
+
+        c = Country(code='US', name='United States of America', alpha3='USA')
+        self.session.add(c)
+
+        prf = Profile(uuid='John Smith', name='Smith, J.',
+                      email='jsmith@example.com', is_bot=True,
+                      country_code='US')
+
+        self.session.add(prf)
+        self.session.commit()
+
+        # Tests
+        d = prf.to_dict()
+
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d['uuid'], 'John Smith')
+        self.assertEqual(d['name'], 'Smith, J.')
+        self.assertEqual(d['email'], 'jsmith@example.com')
+        self.assertEqual(d['is_bot'], True)
+        self.assertEqual(d['country']['code'], 'US')
+        self.assertEqual(d['country']['name'], 'United States of America')
+
+        # No country set
+        prf = Profile(uuid='John Smith', name='Smith, J.',
+                      email='jsmith@example.com', is_bot=True,
+                      country_code=None)
+
+        d = prf.to_dict()
+        self.assertEqual(d['country'], None)
+
 
 class TestEnrollment(TestCaseBase):
     """Unit tests for Enrollment class"""
@@ -212,14 +520,19 @@ class TestEnrollment(TestCaseBase):
     def test_not_null_relationships(self):
         """Check whether every enrollment is assigned organizations and unique identities"""
 
-        with self.assertRaisesRegexp(OperationalError, NULL_CHECK_ERROR):
+        if sys.version_info[0] >= 3: # Python 3
+            expected = IntegrityError
+        else: # Python 2
+            expected = OperationalError
+
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
             rol1 = Enrollment()
             self.session.add(rol1)
             self.session.commit()
 
         self.session.rollback()
 
-        with self.assertRaisesRegexp(OperationalError, NULL_CHECK_ERROR):
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
             uid = UniqueIdentity(uuid='John Smith')
             self.session.add(uid)
 
@@ -229,7 +542,7 @@ class TestEnrollment(TestCaseBase):
 
         self.session.rollback()
 
-        with self.assertRaisesRegexp(OperationalError, NULL_CHECK_ERROR):
+        with self.assertRaisesRegexp(expected, NULL_CHECK_ERROR):
             org = Organization(name='Example')
             self.session.add(org)
 
@@ -259,8 +572,6 @@ class TestEnrollment(TestCaseBase):
     def test_default_enrollment_period(self):
         """Check whether the default period is set when initializing the class"""
 
-        import datetime
-
         uid = UniqueIdentity(uuid='John Smith')
         self.session.add(uid)
 
@@ -271,25 +582,65 @@ class TestEnrollment(TestCaseBase):
         self.session.add(rol1)
         self.session.commit()
 
-        self.assertEqual(rol1.init, datetime.datetime(1900, 1, 1, 0, 0, 0))
+        self.assertEqual(rol1.start, datetime.datetime(1900, 1, 1, 0, 0, 0))
         self.assertEqual(rol1.end, datetime.datetime(2100, 1, 1, 0, 0, 0))
 
-        # Setting init and end dates to None produce the same result
+        # Setting start and end dates to None produce the same result
         rol2 = Enrollment(uidentity=uid, organization=org,
-                          init=None, end=datetime.datetime(2222, 1, 1, 0, 0, 0))
+                          start=None, end=datetime.datetime(2222, 1, 1, 0, 0, 0))
         self.session.add(rol2)
         self.session.commit()
 
-        self.assertEqual(rol2.init, datetime.datetime(1900, 1, 1, 0, 0, 0))
+        self.assertEqual(rol2.start, datetime.datetime(1900, 1, 1, 0, 0, 0))
         self.assertEqual(rol2.end, datetime.datetime(2222, 1, 1, 0, 0, 0))
 
         rol3 = Enrollment(uidentity=uid, organization=org,
-                          init=datetime.datetime(1999, 1, 1, 0, 0, 0), end=None)
+                          start=datetime.datetime(1999, 1, 1, 0, 0, 0), end=None)
         self.session.add(rol3)
         self.session.commit()
 
-        self.assertEqual(rol3.init, datetime.datetime(1999, 1, 1, 0, 0, 0))
+        self.assertEqual(rol3.start, datetime.datetime(1999, 1, 1, 0, 0, 0))
         self.assertEqual(rol3.end, datetime.datetime(2100, 1, 1, 0, 0, 0))
+
+    def test_to_dict(self):
+        """Test output of to_dict() method"""
+
+        uid = UniqueIdentity(uuid='John Smith')
+        self.session.add(uid)
+
+        org = Organization(name='Example')
+        self.session.add(org)
+
+        rol = Enrollment(uidentity=uid, organization=org,
+                         start=datetime.datetime(1999, 1, 1, 0, 0, 0),
+                         end=datetime.datetime(2001, 1, 1, 0, 0, 0))
+
+        self.session.add(rol)
+        self.session.commit()
+
+        # Tests
+        d = rol.to_dict()
+
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d['uuid'], 'John Smith')
+        self.assertEqual(d['organization'], 'Example')
+        self.assertEqual(d['start'], datetime.datetime(1999, 1, 1, 0, 0, 0))
+        self.assertEqual(d['end'], datetime.datetime(2001, 1, 1, 0, 0, 0))
+
+
+class TestMatchingBlacklist(TestCaseBase):
+    """Unit tests for MatchingBlacklist class"""
+
+    def test_unique_excluded(self):
+        """Check whether the excluded term is in fact unique"""
+
+        with self.assertRaisesRegexp(IntegrityError, DUP_CHECK_ERROR):
+            mb1 = MatchingBlacklist(excluded='John Smith')
+            mb2 = MatchingBlacklist(excluded='John Smith')
+
+            self.session.add(mb1)
+            self.session.add(mb2)
+            self.session.commit()
 
 
 if __name__ == "__main__":

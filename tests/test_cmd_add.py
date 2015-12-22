@@ -21,6 +21,9 @@
 #     Santiago Dueñas <sduenas@bitergia.com>
 #
 
+from __future__ import absolute_import
+from __future__ import unicode_literals
+
 import sys
 import unittest
 
@@ -28,8 +31,10 @@ if not '..' in sys.path:
     sys.path.insert(0, '..')
 
 from sortinghat import api
+from sortinghat.command import CMD_SUCCESS, CMD_FAILURE
 from sortinghat.cmd.add import Add
 from sortinghat.db.database import Database
+from sortinghat.exceptions import CODE_ALREADY_EXISTS_ERROR, CODE_MATCHER_NOT_SUPPORTED_ERROR, CODE_NOT_FOUND_ERROR, CODE_VALUE_ERROR
 
 from tests.config import DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, DB_PORT
 
@@ -66,6 +71,29 @@ New match found
 + 75d95d6c8492fd36d24a18bd45d62161e05fbc97
   * John Smith\tjsmith@example.com\t-\tscm
 Unique identity 03e12d00e37fd45593c49a5a5a1652deca4cf302 merged on 75d95d6c8492fd36d24a18bd45d62161e05fbc97"""
+
+ADD_OUTPUT_BLACKLIST = """New identity 1be5376d8d87bc3a391459a18ec0b41d1c8080d5 added to 1be5376d8d87bc3a391459a18ec0b41d1c8080d5
+
+New match found
+
++ 1be5376d8d87bc3a391459a18ec0b41d1c8080d5
+  * John Smith\tjsmith@example.com\t-\tunknown
+
++ 03e12d00e37fd45593c49a5a5a1652deca4cf302
+  * John Smith\tjsmith@example.com\tjsmith\tscm
+Unique identity 1be5376d8d87bc3a391459a18ec0b41d1c8080d5 merged on 03e12d00e37fd45593c49a5a5a1652deca4cf302
+
+New match found
+
++ 03e12d00e37fd45593c49a5a5a1652deca4cf302
+  * John Smith\tjsmith@example.com\tjsmith\tscm
+  * John Smith\tjsmith@example.com\t-\tunknown
+
++ 75d95d6c8492fd36d24a18bd45d62161e05fbc97
+  * John Smith\tjsmith@example.com\t-\tscm
+Unique identity 03e12d00e37fd45593c49a5a5a1652deca4cf302 merged on 75d95d6c8492fd36d24a18bd45d62161e05fbc97
+New identity 24769e96010fa84fd7af86586c3eb6090e66e319 added to 24769e96010fa84fd7af86586c3eb6090e66e319
+New identity 9ba1f605f3621fa10d98335ddad36b77b57fae99 added to 9ba1f605f3621fa10d98335ddad36b77b57fae99"""
 
 
 class TestBaseCase(unittest.TestCase):
@@ -113,8 +141,9 @@ class TestAddCommand(TestBaseCase):
 
         # Assign to John Smith - 03e12d00e37fd45593c49a5a5a1652deca4cf302
         # unique identity
-        self.cmd.run('--email', 'jsmith@example.com', '--source', 'mls',
-                     '--uuid', '03e12d00e37fd45593c49a5a5a1652deca4cf302')
+        code = self.cmd.run('--email', 'jsmith@example.com', '--source', 'mls',
+                            '--uuid', '03e12d00e37fd45593c49a5a5a1652deca4cf302')
+        self.assertEqual(code, CMD_SUCCESS)
 
         # Check output
         output = sys.stdout.getvalue().strip()
@@ -123,12 +152,14 @@ class TestAddCommand(TestBaseCase):
     def test_add_with_matching(self):
         """Check how it works when using matching methods"""
 
-        self.cmd.run('--email', 'jsmith@example.com', '--source', 'mls',
-                     '--matching', 'default')
+        code = self.cmd.run('--email', 'jsmith@example.com', '--source', 'mls',
+                            '--matching', 'default')
+        self.assertEqual(code, CMD_SUCCESS)
 
         # Check output
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, ADD_OUTPUT_MATCHING)
+
 
 class TestAdd(TestBaseCase):
     """Unit tests for add"""
@@ -141,8 +172,9 @@ class TestAdd(TestBaseCase):
         self.cmd.add('unknown', 'jroe@example.com')
 
         # Add this identity to 'Jonh Smith' - 03e12d00e37fd45593c49a5a5a1652deca4cf302
-        self.cmd.add('mls', email='jsmith@example.com',
-                     uuid='03e12d00e37fd45593c49a5a5a1652deca4cf302')
+        code = self.cmd.add('mls', email='jsmith@example.com',
+                            uuid='03e12d00e37fd45593c49a5a5a1652deca4cf302')
+        self.assertEqual(code, CMD_SUCCESS)
 
         # Check output first
         output = sys.stdout.getvalue().strip()
@@ -151,43 +183,51 @@ class TestAdd(TestBaseCase):
     def test_non_existing_uuid(self):
         """Check if it fails adding identities to unique identities that do not exist"""
 
-        self.cmd.add('scm', email='jroe@example.com', uuid='FFFFFFFFFFFFFFF')
+        code = self.cmd.add('scm', email='jroe@example.com', uuid='FFFFFFFFFFFFFFF')
+        self.assertEqual(code, CODE_NOT_FOUND_ERROR)
+
         output = sys.stderr.getvalue().strip()
         self.assertEqual(output, ADD_UUID_NOT_FOUND_ERROR)
 
     def test_existing_identity(self):
         """Check if it fails adding an identity that already exists"""
 
-        self.cmd.add('scm', 'jsmith@example.com', 'John Smith', 'jsmith')
+        code = self.cmd.add('scm', 'jsmith@example.com', 'John Smith', 'jsmith')
+        self.assertEqual(code, CODE_ALREADY_EXISTS_ERROR)
         output = sys.stderr.getvalue().strip()
         self.assertEqual(output, ADD_EXISTING_ERROR)
 
     def test_none_or_empty_source(self):
         """Check whether new identities cannot be added when giving a None or empty source"""
 
-        self.cmd.add(None)
+        code = self.cmd.add(None)
+        self.assertEqual(code, CODE_VALUE_ERROR)
         output = sys.stderr.getvalue().strip().split('\n')[0]
         self.assertEqual(output, ADD_SOURCE_NONE_ERROR)
 
-        self.cmd.add('')
+        code = self.cmd.add('')
+        self.assertEqual(code, CODE_VALUE_ERROR)
         output = sys.stderr.getvalue().strip().split('\n')[1]
         self.assertEqual(output, ADD_SOURCE_EMPTY_ERROR)
 
     def test_none_or_empty_data(self):
         """Check whether new identities cannot be added when identity data is None or empty"""
 
-        self.cmd.add('scm', None, '', None)
+        code = self.cmd.add('scm', None, '', None)
+        self.assertEqual(code, CODE_VALUE_ERROR)
         output = sys.stderr.getvalue().strip().split('\n')[0]
         self.assertEqual(output, ADD_IDENTITY_NONE_OR_EMPTY_ERROR)
 
-        self.cmd.add('scm', '', '', '')
+        code = self.cmd.add('scm', '', '', '')
+        self.assertEqual(code, CODE_VALUE_ERROR)
         output = sys.stderr.getvalue().strip().split('\n')[1]
         self.assertEqual(output, ADD_IDENTITY_NONE_OR_EMPTY_ERROR)
 
     def test_invalid_matching_method(self):
         """Check if it fails when an invalid matching method is given"""
 
-        self.cmd.add('scm', 'jsmith@example.com', matching='mock')
+        code = self.cmd.add('scm', 'jsmith@example.com', matching='mock')
+        self.assertEqual(code, CODE_MATCHER_NOT_SUPPORTED_ERROR)
         output = sys.stderr.getvalue().strip()
         self.assertEqual(output, ADD_MATCHING_ERROR)
 
@@ -195,11 +235,36 @@ class TestAdd(TestBaseCase):
         """Check whether new identities are merged using the default matching method"""
 
         # Add this identity to 'Jonh Smith' and merge
-        self.cmd.add('mls', email='jsmith@example.com', matching='default')
+        code = self.cmd.add('mls', email='jsmith@example.com', matching='default')
+        self.assertEqual(code, CMD_SUCCESS)
 
         # Check output
         output = sys.stdout.getvalue().strip()
         self.assertEqual(output, ADD_OUTPUT_MATCHING)
+
+    def test_default_matching_method_with_blacklist(self):
+        """Check whether new identities are merged using a blacklist"""
+
+        # Add some entries to the blacklist
+        api.add_to_matching_blacklist(self.db, 'John Smith')
+        api.add_to_matching_blacklist(self.db, 'jrae@example.com')
+
+        # Add this identity to 'Jonh Smith' and merge
+        code = self.cmd.add('unknown', name='John Smith', email='jsmith@example.com',
+                            matching='default')
+        self.assertEqual(code, CMD_SUCCESS)
+
+        # These two will not match due to the blacklist
+        code1 = self.cmd.add('scm', name='Jane Rae', email='jrae@example.com',
+                            matching='default')
+        code2 = self.cmd.add('mls', name='Jane Rae', email='jrae@example.com',
+                            matching='default')
+        self.assertEqual(code1, CMD_SUCCESS)
+        self.assertEqual(code2, CMD_SUCCESS)
+
+        # Check output
+        output = sys.stdout.getvalue().strip()
+        self.assertEqual(output, ADD_OUTPUT_BLACKLIST)
 
 
 if __name__ == "__main__":

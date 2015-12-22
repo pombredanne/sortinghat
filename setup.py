@@ -29,6 +29,16 @@ setup(name="sortinghat",
       author="Bitergia",
       author_email="metrics-grimoire@lists.libresoft.es",
       url="https://github.com/MetricsGrimoire/sortinghat",
-      packages=['sortinghat', 'sortinghat.db', 'sortinghat.cmd', 'sortinghat.matching', 'sortinghat.templates'],
-      package_data={'sortinghat.templates': ['*.tmpl']},
-      scripts=["bin/sortinghat", "bin/mg2sh"])
+      packages=['sortinghat', 'sortinghat.db', 'sortinghat.cmd', 'sortinghat.matching',
+                'sortinghat.parsing', 'sortinghat.templates', 'sortinghat.data'],
+      package_data={'sortinghat.templates' : ['*.tmpl'],
+                    'sortinghat.data' : ['*'],},
+      scripts=["bin/sortinghat", "bin/mg2sh", "bin/sh2mg"],
+      requires=['sqlalchemy', 'jinja2'],
+      classifiers=[
+        'License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)',
+        'Programming Language :: Python :: 2',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.4']
+    )
